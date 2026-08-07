@@ -2,8 +2,9 @@
 
 Rewrites a recovered .vrcw to your world ID, swaps it onto the SDK’s last build, and lets you upload it without rebuilding the scene.
 
-> **Status:** `1.0.0-beta`
-> I'm not responsible for any bans that may occcur. Use at **your own risk.**
+> **Status:** `1.0.0-beta`  
+> I'm not responsible for any bans that may occur.  
+> Use at **your own risk.**
 
 ---
 
