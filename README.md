@@ -4,6 +4,7 @@ Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's 
 Best when the file's Unity version matches your Editor.
 
 > **Status:** `1.0.0-beta`  
+> Recover your old worlds.  
 > I'm not responsible for any bans that may occur.  
 > Use at **your own risk.**
 
@@ -109,7 +110,7 @@ The tool may show an SDK problem dialog. Note your Unity + SDK versions and chec
 
 Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 
-Big thanks to FACS01  
+Standing on the shoulders of giants
 Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script
 
 ---
