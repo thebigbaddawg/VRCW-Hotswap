@@ -6,9 +6,8 @@
 Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.  
 Works best when the file's Unity version matches your Editor.
 
-> **Status:** `1.0.0-beta`  
+> **Status:** `1.0.1-beta`  
 > Recover your old worlds.  
-> I'm not responsible for any bans that may occur.  
 > Use at **your own risk.**
 
 ---
