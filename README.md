@@ -1,6 +1,7 @@
 # VRCW Hotswap
 
-Rewrites a recovered .vrcw to your world ID, swaps it onto the SDK’s last build, and lets you upload it without rebuilding the scene.
+Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.
+Best when the file's Unity version matches your Editor.
 
 > **Status:** `1.0.0-beta`  
 > I'm not responsible for any bans that may occur.  
