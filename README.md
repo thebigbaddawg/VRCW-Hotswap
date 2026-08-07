@@ -110,7 +110,7 @@ The tool may show an SDK problem dialog. Note your Unity + SDK versions and chec
 
 Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 
-Standing on the shoulders of giants
+Standing on the shoulders of giants  
 Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script
 
 ---
