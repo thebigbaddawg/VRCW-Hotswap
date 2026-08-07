@@ -1,5 +1,6 @@
-![Downloads](https://img.shields.io/github/downloads/thebigbaddawg/VRCW-Hotswap/total)
-![Stars](https://img.shields.io/github/stars/thebigbaddawg/VRCW-Hotswap)
+![Downloads](https://badgen.net/github/assets-dl/thebigbaddawg/VRCW-Hotswap)
+![Stars](https://badgen.net/github/stars/thebigbaddawg/VRCW-Hotswap)
+
 
 # VRCW Hotswap
 
