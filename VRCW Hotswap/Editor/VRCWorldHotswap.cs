@@ -125,17 +125,17 @@ public class VRCWorldHotswap
     }
 
     public static string HowtoDialogBody =>
-    "How to use:\n\n" +
-    "1) Open a simple world scene\n" +
-    " (or VRCW Hotswap > Spawn Dummy World)\n\n" +
-    "2) In the VRChat SDK, click Build & Publish\n" +
-    " (the default button is fine)\n\n" +
-    "3) VRCW Hotswap > Load Hotswap File (.vrcw)\n" +
-    " and pick your world\n\n" +
-    "4) VRCW Hotswap > Upload Hotswapped Build\n\n" +
-    "After step 3, do NOT click Build & Publish again.\n" +
-    "That rebuilds the scene and undoes the swap.\n\n" +
-    "Your original .vrcw is not changed.";
+        "How to use:\n\n" +
+        "1) Open a simple world scene\n" +
+        "   (or VRCW Hotswap > Spawn Dummy World)\n\n" +
+        "2) In the VRChat SDK, click Build & Publish once\n" +
+        "   (this sets up your world ID and build file)\n\n" +
+        "3) VRCW Hotswap > Load Hotswap File (.vrcw)\n" +
+        "   and pick your recovered world\n\n" +
+        "4) VRCW Hotswap > Upload Hotswapped Build\n\n" +
+        "After step 3, do NOT click Build & Publish again.\n" +
+        "That rebuilds the scene and undoes the swap.\n\n" +
+        "Your original .vrcw is not changed.";
 
     public static void ShowHowtoDialog()
     {
