@@ -1,3 +1,6 @@
+![Downloads](https://img.shields.io/github/downloads/thebigbaddawg/VRCW-Hotswap/total)
+![Stars](https://img.shields.io/github/stars/thebigbaddawg/VRCW-Hotswap)
+
 # VRCW Hotswap
 
 Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.  
