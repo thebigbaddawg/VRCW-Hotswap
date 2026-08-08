@@ -1,5 +1,4 @@
 ![Downloads](https://badgen.net/github/assets-dl/thebigbaddawg/VRCW-Hotswap)
-![Stars](https://badgen.net/github/stars/thebigbaddawg/VRCW-Hotswap)
 
 
 # VRCW Hotswap
