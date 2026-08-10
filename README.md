@@ -1,4 +1,4 @@
-![Downloads](https://badgen.net/github/assets-dl/thebigbaddawg/VRCW-Hotswap)
+![GitHub All Releases](https://img.shields.io/github/downloads/thebigbaddawg/VRCW-Hotswap/total?logo=github&color=blue&style=flat-square)
 
 
 # VRCW Hotswap
