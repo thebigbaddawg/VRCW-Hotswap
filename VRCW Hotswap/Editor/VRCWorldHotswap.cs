@@ -1694,32 +1694,59 @@ public class VRCWorldHotswap
         if (IsSupportedHotswapUnityVersion(generatorVersion))
         {
             Debug.Log(
-            $"<color=cyan>VRCW Hotswap:</color> Unity version OK " +
-            $"({DescribeAcceptedUnityVersion(generatorVersion)}).\n");
+                $"<color=cyan>VRCW Hotswap:</color> Unity version OK " +
+                $"({DescribeAcceptedUnityVersion(generatorVersion)}).\n");
             return true;
         }
 
         string editorVer = Application.unityVersion;
+
+        if (IsDwrGeneratorVersion(generatorVersion))
+        {
+            Debug.LogWarning(
+                $"<color=cyan>VRCW Hotswap:</color> DWR bundle detected: file={generatorVersion}, " +
+                $"editor={editorVer}.\n");
+
+            return EditorUtility.DisplayDialog(
+                "VRCW Hotswap - DWR bundle",
+                $"This looks like a DWR build:\n  {generatorVersion}\n\n" +
+                $"This Editor is:\n  {editorVer}\n\n" +
+                "DWR files are VRChat/custom builds, not a normal SDK Build & Publish .vrcw.\n\n" +
+                "Hotswap and upload may work, and they are often more likely to work than " +
+                "much older Unity worlds, but joining can still fail.\n\n" +
+                $"Most reliable: a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}, " +
+                "or a .vrcw that exactly matches this Editor.\n\n" +
+                "Continue anyway?",
+                "Continue Anyway",
+                "Cancel");
+        }
+
         string body =
-        $"This file was built with:\n {generatorVersion}\n\n" +
-        $"This Editor is:\n {editorVer}\n\n" +
-        $"Important: open Unity {generatorVersion} and run hotswap there instead.\n\n" +
-        $"Uploading a {generatorVersion} world from Editor {editorVer} is not recommended.\n" +
-        "The upload might succeed, but joining the world usually will not work.\n\n" +
-        $"Other options:\n" +
-        $"- Use a .vrcw built with this Editor ({editorVer})\n" +
-        $"- Or use a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}\n\n" +
-        "Continue anyway?";
+            $"This file was built with:\n  {generatorVersion}\n\n" +
+            $"This Editor is:\n  {editorVer}\n\n" +
+            $"Important: open Unity {generatorVersion} and run hotswap there instead.\n\n" +
+            $"Uploading a {generatorVersion} world from Editor {editorVer} is not recommended.\n" +
+            "The upload might succeed, but joining the world usually will not work.\n\n" +
+            $"Other options:\n" +
+            $"- Use a .vrcw built with this Editor ({editorVer})\n" +
+            $"- Or use a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}\n\n" +
+            "Continue anyway?";
 
         Debug.LogWarning(
-        $"<color=cyan>VRCW Hotswap:</color> Unity mismatch: file={generatorVersion}, " +
-        $"editor={editorVer}, preferred={TestedUnityVersion}.\n");
+            $"<color=cyan>VRCW Hotswap:</color> Unity mismatch: file={generatorVersion}, " +
+            $"editor={editorVer}, preferred={TestedUnityVersion}.\n");
 
         return EditorUtility.DisplayDialog(
-        "VRCW Hotswap - Unity version mismatch",
-        body,
-        "Continue Anyway",
-        "Cancel");
+            "VRCW Hotswap - Unity version mismatch",
+            body,
+            "Continue Anyway",
+            "Cancel");
+    }
+
+    private static bool IsDwrGeneratorVersion(string generatorVersion)
+    {
+        return !string.IsNullOrEmpty(generatorVersion) &&
+               generatorVersion.IndexOf("DWR", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool ConfirmPlatformMatchOrContinue(string vrcwPath)
