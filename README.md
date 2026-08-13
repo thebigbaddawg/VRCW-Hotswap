@@ -19,8 +19,9 @@ Works best when the file's Unity version matches your Editor.
 - A simple world scene (or use **Spawn Dummy World**)
 
 **Tested & working:**
-- Worlds SDK **3.7.6** on Unity **2022.3.6f1** with PC worlds that match **6f1**
-- Worlds SDK **3.10.4** on Unity **2022.3.22f1** with PC worlds that match **22f1**
+- Worlds SDK **3.4.2** on Unity **2019.4.31f1** with PC worlds that match **2019.4.31f1**
+- Worlds SDK **3.7.6** on Unity **2022.3.6f1** with PC worlds that match **2022.3.6f1**
+- Worlds SDK **3.10.4** on Unity **2022.3.22f1** with PC worlds that match **2022.3.22f1**
 
 **Partially tested & sometimes working:**
 - Worlds SDK **3.10.4** on Unity **2022.3.22f1** with **22f2-DWR** world bundles
