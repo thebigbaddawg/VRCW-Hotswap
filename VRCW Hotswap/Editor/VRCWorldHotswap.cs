@@ -25,16 +25,24 @@ using VRC.SDKBase.Editor.Api;
 [InitializeOnLoad]
 public class VRCWorldHotswap
 {
-    public const string Version = "1.0.0-beta";
+    public const string Version = "1.0.3-beta";
     public const string TestedWorldsSdkVersion = "3.10.4";
     public const string TestedUnityVersion = "2022.3.22f1";
-
     public const string TestedUnityVersion2 = "2022.3.6f1";
     public const string TestedWorldsSdkVersion2 = "3.7.6";
+    public const string TestedWorldsSdkVersion2019 = "3.4.2";
+    public const string TestedUnityVersion2019 = "2019.4.31f1";
     public const string MaintainerName = "thebigbaddawg";
     public const string MaintainerUrl = "https://github.com/thebigbaddawg";
     public const string OriginalAuthorName = "FACS01";
     public const string OriginalAuthorUrl = "https://github.com/FACS01-01";
+
+    public static string PreferredHotswapUnityVersion =>
+#if UNITY_2019_4
+        TestedUnityVersion2019;
+#else
+        TestedUnityVersion;
+#endif
 
     private static readonly string ProjTempPath = Application.temporaryCachePath;
     private static readonly string DecompRecoveredPath = ProjTempPath + "/decomp_world.vrcw";
@@ -131,11 +139,11 @@ public class VRCWorldHotswap
         "2) In the VRChat SDK, click Build & Publish once\n" +
         "   (this sets up your world ID and build file)\n\n" +
         "3) VRCW Hotswap > Load Hotswap File (.vrcw)\n" +
-        "   and pick your recovered world\n\n" +
+        "   and pick the world you wish to hotswap\n\n" +
         "4) VRCW Hotswap > Upload Hotswapped Build\n\n" +
         "After step 3, do NOT click Build & Publish again.\n" +
         "That rebuilds the scene and undoes the swap.\n\n" +
-        "Your original .vrcw is not changed.";
+        "Your original .vrcw file is left untouched.";
 
     public static void ShowHowtoDialog()
     {
@@ -620,8 +628,10 @@ public class VRCWorldHotswap
         "Can't talk to the VRChat SDK the way this tool expects.\n\n" +
         "Often this means the Worlds SDK updated and broke this tool.\n\n" +
         $"Tested with:\n" +
+        $"• SDK {TestedWorldsSdkVersion2019} / Unity {TestedUnityVersion2019}\n" +
         $"• SDK {TestedWorldsSdkVersion2} / Unity {TestedUnityVersion2}\n" +
         $"• SDK {TestedWorldsSdkVersion} / Unity {TestedUnityVersion}\n" +
+        $"• Partially tested: SDK {TestedWorldsSdkVersion} / Unity {TestedUnityVersion} with 22f2-DWR bundles\n" +
         $"Your Unity: {Application.unityVersion}\n" +
         $"Your SDK (guess): {sdkHint}\n\n" +
         "Try: open VRChat SDK > Builder, sign in, fill name / image, then retry.\n" +
@@ -735,6 +745,7 @@ public class VRCWorldHotswap
         }
 
         string tmp = ProjTempPath + "/inspect_world.vrcw";
+        EnsureTempDirectory();
         try { File.Delete(tmp); } catch { }
         PrepareUncompressedVrcw(
         vrcwPath,
@@ -779,10 +790,14 @@ public class VRCWorldHotswap
                 {
                     sb.AppendLine($"Built with Unity: {genVer}");
                     sb.AppendLine($"Bundle format: {fsFormat}");
+                    if (IsDwrGeneratorVersion(genVer))
+                        sb.AppendLine("DWR: yes (VRChat/custom build; hotswap may work, join not guaranteed)");
                     sb.AppendLine(
-                    IsSupportedHotswapUnityVersion(genVer)
-                    ? $"Version check: OK ({DescribeAcceptedUnityVersion(genVer)})"
-                    : $"Version check: WRONG (want {TestedUnityVersion}, or match your Editor {Application.unityVersion})");
+                        IsSupportedHotswapUnityVersion(genVer)
+                            ? $"Version check: OK ({DescribeAcceptedUnityVersion(genVer)})"
+                            :                             IsDwrGeneratorVersion(genVer)
+                                ? $"Version check: DWR (want {PreferredHotswapUnityVersion}, or match your Editor {Application.unityVersion}; often works, join can still fail)"
+                                : $"Version check: WRONG (want {PreferredHotswapUnityVersion}, or match your Editor {Application.unityVersion})");
                 }
                 else
                 sb.AppendLine($"Built with Unity: (couldn't read: {genDetail ?? "n/a"})");
@@ -917,12 +932,20 @@ public class VRCWorldHotswap
 
     private static T FindFirstSceneObject<T>() where T : UnityEngine.Object
     {
+#if UNITY_2022_2_OR_NEWER
         return UnityEngine.Object.FindFirstObjectByType<T>();
+#else
+        return UnityEngine.Object.FindObjectOfType<T>();
+#endif
     }
 
     private static T[] FindSceneObjects<T>() where T : UnityEngine.Object
     {
+#if UNITY_2022_2_OR_NEWER
         return UnityEngine.Object.FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+        return UnityEngine.Object.FindObjectsOfType<T>();
+#endif
     }
 
     private static void AnalyzeAndRewrite()
@@ -1038,7 +1061,8 @@ public class VRCWorldHotswap
 
     private static void CompressAndFinalize()
     {
-        File.Delete(TmpOutPath);
+        EnsureTempDirectory();
+        try { File.Delete(TmpOutPath); } catch { }
         int op = BeginAsyncOp();
         EditorUtility.DisplayCancelableProgressBar("VRCW Hotswap", "Packing...", 0f);
 
@@ -1213,7 +1237,7 @@ public class VRCWorldHotswap
         EditorUtility.DisplayDialog(
         "VRCW Hotswap",
         "World loaded!\n\n" +
-        "Your original .vrcw was not changed.\n\n" +
+            "Your original .vrcw file is left untouched.\n\n" +
         sizeNote +
         androidPackNote +
         sizeWarning +
@@ -1657,21 +1681,21 @@ public class VRCWorldHotswap
     private static bool IsSupportedHotswapUnityVersion(string generatorVersion)
     {
         if (string.IsNullOrEmpty(generatorVersion))
-        return false;
+            return false;
 
-        if (string.Equals(generatorVersion, TestedUnityVersion, StringComparison.OrdinalIgnoreCase))
-        return true;
+        if (string.Equals(generatorVersion, PreferredHotswapUnityVersion, StringComparison.OrdinalIgnoreCase))
+            return true;
 
         return string.Equals(generatorVersion, Application.unityVersion, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string DescribeAcceptedUnityVersion(string generatorVersion)
     {
-        if (string.Equals(generatorVersion, TestedUnityVersion, StringComparison.OrdinalIgnoreCase))
-        return $"matches preferred {TestedUnityVersion}";
+        if (string.Equals(generatorVersion, PreferredHotswapUnityVersion, StringComparison.OrdinalIgnoreCase))
+            return $"matches preferred {PreferredHotswapUnityVersion}";
 
         if (string.Equals(generatorVersion, Application.unityVersion, StringComparison.OrdinalIgnoreCase))
-        return $"matches this Editor ({Application.unityVersion})";
+            return $"matches this Editor ({Application.unityVersion})";
 
         return generatorVersion;
     }
@@ -1685,7 +1709,7 @@ public class VRCWorldHotswap
             "Couldn't read which Unity version made this file.\n\n" +
             $"Detail: {detail ?? "n/a"}\n\n" +
             "Best: use a .vrcw that matches this Editor, " +
-            $"or a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}.\n\n" +
+            $"or a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}.\n\n" +
             "Continue anyway?",
             "Continue Anyway",
             "Cancel");
@@ -1714,7 +1738,7 @@ public class VRCWorldHotswap
                 "DWR files are VRChat/custom builds, not a normal SDK Build & Publish .vrcw.\n\n" +
                 "Hotswap and upload may work, and they are often more likely to work than " +
                 "much older Unity worlds, but joining can still fail.\n\n" +
-                $"Most reliable: a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}, " +
+                $"Most reliable: a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}, " +
                 "or a .vrcw that exactly matches this Editor.\n\n" +
                 "Continue anyway?",
                 "Continue Anyway",
@@ -1729,12 +1753,12 @@ public class VRCWorldHotswap
             "The upload might succeed, but joining the world usually will not work.\n\n" +
             $"Other options:\n" +
             $"- Use a .vrcw built with this Editor ({editorVer})\n" +
-            $"- Or use a {TestedUnityVersion} .vrcw on Unity {TestedUnityVersion}\n\n" +
+            $"- Or use a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}\n\n" +
             "Continue anyway?";
 
         Debug.LogWarning(
             $"<color=cyan>VRCW Hotswap:</color> Unity mismatch: file={generatorVersion}, " +
-            $"editor={editorVer}, preferred={TestedUnityVersion}.\n");
+            $"editor={editorVer}, preferred={PreferredHotswapUnityVersion}.\n");
 
         return EditorUtility.DisplayDialog(
             "VRCW Hotswap - Unity version mismatch",
@@ -1911,8 +1935,19 @@ public class VRCWorldHotswap
         return BundlePlatformGuess.Pc;
     }
 
+    private static void EnsureTempDirectory()
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(ProjTempPath))
+                Directory.CreateDirectory(ProjTempPath);
+        }
+        catch { }
+    }
+
     private static void CleanupTempFiles()
     {
+        EnsureTempDirectory();
         try { File.Delete(DecompRecoveredPath); } catch { }
         try { File.Delete(DecompModPath); } catch { }
         try { File.Delete(TmpOutPath); } catch { }
@@ -1967,9 +2002,10 @@ public class VRCWorldHotswap
         $"<color=cyan>VRCW Hotswap:</color> decompressing with Unity " +
         $"({lastCompressionProbeDetail ?? "compression unknown / not proven uncompressed"})...\n");
 
-        File.Delete(tempUncompressedPath);
+        EnsureTempDirectory();
+        try { File.Delete(tempUncompressedPath); } catch { }
         int op = BeginAsyncOp();
-        abro = AssetBundle.RecompressAssetBundleAsync(vrcwPath, tempUncompressedPath, BuildCompression.Uncompressed);
+        abro = AssetBundle.RecompressAssetBundleAsync(vrcwPath, tempUncompressedPath, BuildCompression.UncompressedRuntime);
         EditorUtility.DisplayCancelableProgressBar(progressTitle, progressInfo, 0f);
         EditorApplication.update += progressCallback;
         abro.completed += _ =>
@@ -2529,14 +2565,22 @@ public class VRCWorldHotswapAboutWindow : EditorWindow
         EditorGUILayout.LabelField("Version " + VRCWorldHotswap.Version);
         EditorGUILayout.LabelField("Tested & working:", EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-        $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion2} / Unity {VRCWorldHotswap.TestedUnityVersion2}",
-        EditorStyles.miniLabel);
+            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion2019} / Unity {VRCWorldHotswap.TestedUnityVersion2019}",
+            EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-        $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion} / Unity {VRCWorldHotswap.TestedUnityVersion}",
-        EditorStyles.miniLabel);
+            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion2} / Unity {VRCWorldHotswap.TestedUnityVersion2} with PC worlds that match 6f1",
+            EditorStyles.miniLabel);
+        EditorGUILayout.LabelField(
+            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion} / Unity {VRCWorldHotswap.TestedUnityVersion} with PC worlds that match 22f1",
+            EditorStyles.miniLabel);
+        EditorGUILayout.LabelField("Partially tested & sometimes working:", EditorStyles.miniLabel);
+        EditorGUILayout.LabelField(
+            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion} / Unity {VRCWorldHotswap.TestedUnityVersion} with 22f2-DWR world bundles",
+            EditorStyles.miniLabel);
         GUILayout.Space(6);
         EditorGUILayout.HelpBox(
-        "Rewrites a recovered .vrcw to your world ID, swaps it onto the SDK's last build, and lets you upload it without rebuilding the scene.\n" +
+            "Rewrites a .vrcw to your world ID, swaps it onto the SDK's last build, and lets you upload it.\n" +
+            "Works best when the file's Unity version matches your Editor.\n" +
             "Only use this on your own worlds.",
         MessageType.Info);
 
