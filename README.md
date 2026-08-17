@@ -4,7 +4,8 @@
 # VRCW Hotswap
 
 Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.  
-Works best when the file's Unity version matches your Editor.
+Works best when the file's Unity version matches your Editor.  
+Includes [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) for LZ4/LZMA packing, bundled as a helper exe.
 
 > **Status:** `1.0.4-beta`  
 > Recover your old worlds.  
@@ -117,7 +118,9 @@ The tool may show an SDK problem dialog. Note your Unity + SDK versions and chec
 Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 
 Standing on the shoulders of giants  
-Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script
+Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script  
+  
+Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
 
 ---
 
