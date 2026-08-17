@@ -139,7 +139,7 @@ On first use the tool asks once which language you want, and defaults to English
 Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 
 Standing on the shoulders of giants  
-Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script  
+Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script. Huge thanks.  
   
 Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
 
