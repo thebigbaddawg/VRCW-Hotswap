@@ -1,6 +1,8 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -25,7 +27,7 @@ using VRC.SDKBase.Editor.Api;
 [InitializeOnLoad]
 public class VRCWorldHotswap
 {
-    public const string Version = "1.0.3-beta";
+    public const string Version = "1.0.4-beta";
     public const string TestedWorldsSdkVersion = "3.10.4";
     public const string TestedUnityVersion = "2022.3.22f1";
     public const string TestedUnityVersion2 = "2022.3.6f1";
@@ -56,6 +58,8 @@ public class VRCWorldHotswap
     private const string SessionHotswapSizeKey = "VRCWorldHotswap.DestSize";
     private const string SessionHotswapFpKey = "VRCWorldHotswap.DestFp";
     private const string PrefsSeenHowtoKey = "VRCWorldHotswap.SeenHowto";
+    private const string PrefsPackAdvancedModeKey = "VRCWorldHotswap.PackAdvancedMode";
+    private const string PrefsPackFastModeKeyLegacy = "VRCWorldHotswap.PackFastMode";
     private const string WorldIdPattern = @"wrld_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
     private const string BuildPlayerPattern = @"BuildPlayer-[^\x00\r\n\.]{1,128}";
     private const string UnityVerPattern = @"20[\d]{2}\.[\d]\.[\d]{1,2}f[\d]";
@@ -82,15 +86,25 @@ public class VRCWorldHotswap
     private static long WorldUploadHopelessBytes =>
     IsAndroidBuildTarget ? AndroidUploadHopelessBytes : PcUploadHopelessBytes;
 
-    private static string UploadPlatformLabel =>
-    IsAndroidBuildTarget ? "Android" : "PC";
+    private static string T(string key) => VRCWorldHotswapLoc.T(key);
+    private static string TF(string key, params object[] args) => VRCWorldHotswapLoc.TF(key, args);
 
-    private const string AndroidUploadDisclaimer =
-    "Android hotswap is barely tested (Quest, Pico, phones, etc.).\n" +
-    "It may not work. Android worlds must be under 100 MB after packing.";
+    private static string UploadPlatformLabel =>
+    IsAndroidBuildTarget ? T("platform.android") : T("platform.pc");
+
+    private static string AndroidUploadDisclaimer =>
+    T("android.disclaimer");
 
     private static AssetBundleRecompressOperation abro;
     private static AssetBundleCreateRequest abcr;
+    private static Process packProcess;
+    private static float packProgress01;
+    private static bool packProcessExited;
+    private static int packProcessExitCode;
+    private static int packAsyncOp;
+    private static string packCompressionLabel = "LZ4";
+    private static DetectedBundleCompression detectedSourceCompression = DetectedBundleCompression.Unknown;
+    private static long sourceFileBytes;
     private static string pendingRecoveredPath;
     private static string pendingOutputPath;
     private static string pendingNewWorldId;
@@ -101,7 +115,7 @@ public class VRCWorldHotswap
 
     private static bool suppressUploadResultDialog;
     private static int asyncOpSerial;
-    private static string uploadProgressStatus = "Uploading...";
+    private static string uploadProgressStatus = VRCWorldHotswapLoc.T("progress.uploading");
     private static float uploadProgress01;
     private static CancellationTokenSource uploadCts;
 #if VRC_SDK_VRCSDK3
@@ -123,6 +137,7 @@ public class VRCWorldHotswap
         operationBusy = false;
         cancelRequested = false;
         asyncOpSerial++;
+        TryKillPackProcess();
         try { uploadCts?.Cancel(); } catch { }
         try { uploadCts?.Dispose(); } catch { }
         uploadCts = null;
@@ -132,22 +147,12 @@ public class VRCWorldHotswap
         try { EditorUtility.ClearProgressBar(); } catch { }
     }
 
-    public static string HowtoDialogBody =>
-        "How to use:\n\n" +
-        "1) Open a simple world scene\n" +
-        "   (or VRCW Hotswap > Spawn Dummy World)\n\n" +
-        "2) In the VRChat SDK, click Build & Publish once\n" +
-        "   (this sets up your world ID and build file)\n\n" +
-        "3) VRCW Hotswap > Load Hotswap File (.vrcw)\n" +
-        "   and pick the world you wish to hotswap\n\n" +
-        "4) VRCW Hotswap > Upload Hotswapped Build\n\n" +
-        "After step 3, do NOT click Build & Publish again.\n" +
-        "That rebuilds the scene and undoes the swap.\n\n" +
-        "Your original .vrcw file is left untouched.";
+    public static string HowtoDialogBody => T("howto.body");
 
     public static void ShowHowtoDialog()
     {
-        EditorUtility.DisplayDialog("VRCW Hotswap", HowtoDialogBody, "Ok");
+        VRCWorldHotswapLoc.PromptFirstRunLanguageIfNeeded();
+        EditorUtility.DisplayDialog(T("app.name"), HowtoDialogBody, T("btn.ok"));
         EditorPrefs.SetBool(PrefsSeenHowtoKey, true);
     }
 
@@ -170,21 +175,19 @@ public class VRCWorldHotswap
     public static void Hotswap()
     {
 #if !VRC_SDK_VRCSDK3
-        EditorUtility.DisplayDialog("VRCW Hotswap", "VRChat World SDK is not in this project.", "Ok");
+        EditorUtility.DisplayDialog(T("app.name"), T("dialog.sdk_missing"), T("btn.ok"));
         return;
 #else
-        if (!TryBeginOperation("Hotswap"))
+        if (!TryBeginOperation(T("action.hotswap")))
         return;
 
         if (SessionState.GetBool(SessionHotswapActiveKey, false))
         {
             if (!EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "You already loaded a world.\n\n" +
-            "Load a different one instead?\n" +
-            "This clears the current swap first.",
-            "Load New File",
-            "Cancel"))
+            T("app.name"),
+            T("dialog.already_loaded"),
+            T("btn.load_new_file"),
+            T("btn.cancel")))
             {
                 Debug.LogWarning("VRCW Hotswap cancelled (kept existing hotswap session).\n");
                 EndOperation();
@@ -199,10 +202,10 @@ public class VRCWorldHotswap
         if (showHowto)
         {
             if (!EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            HowtoDialogBody + "\n\nContinue?",
-            "Continue",
-            "Cancel"))
+            T("app.name"),
+            TF("dialog.howto_continue", HowtoDialogBody),
+            T("btn.continue"),
+            T("btn.cancel")))
             {
                 Debug.LogWarning("VRCW Hotswap cancelled.\n");
                 EndOperation();
@@ -214,9 +217,9 @@ public class VRCWorldHotswap
         var pipeline = FindScenePipelineManager();
         if (pipeline == null)
         {
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            "This scene has no world setup.\n\nUse Spawn Dummy World, or open a world scene.",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            T("dialog.scene_no_world_setup"),
+            T("btn.ok"));
             EditorApplication.Beep();
             EndOperation();
             return;
@@ -224,9 +227,9 @@ public class VRCWorldHotswap
 
         if (string.IsNullOrWhiteSpace(pipeline.blueprintId))
         {
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            "This scene has no world ID yet.\n\nClick Build & Publish in the VRChat SDK first, then try again.",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            T("dialog.scene_no_world_id"),
+            T("btn.ok"));
             EditorApplication.Beep();
             EndOperation();
             return;
@@ -235,9 +238,9 @@ public class VRCWorldHotswap
         pendingNewWorldId = pipeline.blueprintId.Trim();
         if (!Regex.IsMatch(pendingNewWorldId, "^" + WorldIdPattern + "$"))
         {
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            $"Bad world ID on this scene:\n{pendingNewWorldId}",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            TF("dialog.bad_world_id", pendingNewWorldId),
+            T("btn.ok"));
             EditorApplication.Beep();
             EndOperation();
             return;
@@ -247,10 +250,10 @@ public class VRCWorldHotswap
         if (string.IsNullOrEmpty(lastBuild) || !File.Exists(lastBuild))
         {
             if (!EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "No SDK build found yet.\n\nClick Build & Publish in the VRChat SDK first.\n\nContinue anyway? You can still save a file by hand.",
-            "Continue Anyway",
-            "Cancel"))
+            T("app.name"),
+            T("dialog.no_sdk_build_continue"),
+            T("btn.continue_anyway"),
+            T("btn.cancel")))
             {
                 Debug.LogWarning("VRCW Hotswap cancelled (no last build).\n");
                 EndOperation();
@@ -265,9 +268,9 @@ public class VRCWorldHotswap
         }
 
         string vrcwPath = EditorUtility.OpenFilePanelWithFilters(
-        "Pick the .vrcw to hotswap",
+        T("dialog.pick_hotswap_file"),
         Application.dataPath,
-        new[] { "World Files", "vrcw", "All files", "*" });
+        new[] { T("filter.world_files"), "vrcw", T("filter.all_files"), "*" });
 
         if (string.IsNullOrEmpty(vrcwPath))
         {
@@ -302,12 +305,12 @@ public class VRCWorldHotswap
         PrepareUncompressedVrcw(
         vrcwPath,
         DecompRecoveredPath,
-        "VRCW Hotswap",
-        "Preparing your world file...",
+        T("app.name"),
+        T("progress.preparing_world"),
         AbroProgressRecovered,
         readyPath =>
         {
-            if (ConsumeCancelIfRequested("Hotswap cancelled."))
+            if (ConsumeCancelIfRequested(T("dialog.hotswap_cancelled")))
             return;
             activeUncompressedRecoveredPath = readyPath;
             AnalyzeAndRewrite();
@@ -333,15 +336,15 @@ public class VRCWorldHotswap
     public static void UploadLastBuildMenu()
     {
 #if !VRC_SDK_VRCSDK3
-        EditorUtility.DisplayDialog("VRCW Hotswap", "VRChat World SDK is not in this project.", "Ok");
+        EditorUtility.DisplayDialog(T("app.name"), T("dialog.sdk_missing"), T("btn.ok"));
         return;
 #else
         if (operationBusy)
         {
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "Something else is already running.\n\nWait for it to finish, then try again.",
-            "Ok");
+            T("app.name"),
+            T("dialog.busy"),
+            T("btn.ok"));
             return;
         }
 
@@ -357,9 +360,9 @@ public class VRCWorldHotswap
                 return;
             }
 
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            "Nothing ready to upload.\n\nLoad a .vrcw first (Load Hotswap File).",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            T("dialog.nothing_ready_upload"),
+            T("btn.ok"));
             return;
         }
         UploadLastBuildAsync();
@@ -369,6 +372,7 @@ public class VRCWorldHotswap
     [MenuItem("VRCW Hotswap/About VRCW Hotswap", false, 50)]
     public static void OpenAbout()
     {
+        VRCWorldHotswapLoc.PromptFirstRunLanguageIfNeeded();
         VRCWorldHotswapAboutWindow.ShowWindow();
     }
 
@@ -376,7 +380,7 @@ public class VRCWorldHotswap
     private static async void UploadLastBuildAsync()
     {
 
-        if (!TryBeginOperation("Upload"))
+        if (!TryBeginOperation(T("action.upload")))
         return;
 
         IVRCSdkWorldBuilderApi builder = null;
@@ -388,38 +392,36 @@ public class VRCWorldHotswap
             string lastBuild = SessionState.GetString(SessionLastBuildPathKey, null);
             if (string.IsNullOrEmpty(lastBuild) || !File.Exists(lastBuild))
             {
-                EditorUtility.DisplayDialog("VRCW Hotswap",
-                "Nothing ready to upload.\n\nLoad a .vrcw first, then try again.",
-                "Ok");
+                EditorUtility.DisplayDialog(T("app.name"),
+                T("dialog.nothing_ready_upload_retry"),
+                T("btn.ok"));
                 return;
             }
 
             if (!VRCSdkControlPanel.TryGetBuilder(out builder))
             {
                 EditorApplication.ExecuteMenuItem("VRChat SDK/Show Control Panel");
-                EditorUtility.DisplayDialog("VRCW Hotswap",
-                "Open the VRChat SDK Control Panel.\n\n" +
-                "Sign in, go to Builder, fill in name / description / image, then try Upload again.\n\n" +
-                "Don't click Build & Publish after a hotswap.",
-                "Ok");
+                EditorUtility.DisplayDialog(T("app.name"),
+                T("dialog.open_sdk_control_panel"),
+                T("btn.ok"));
                 return;
             }
 
             if (builder.UploadState == SdkUploadState.Uploading)
             {
                 EditorUtility.DisplayDialog(
-                "VRCW Hotswap",
-                "VRChat is already uploading something.\n\nWait, then try again.",
-                "Ok");
+                T("app.name"),
+                T("dialog.vrchat_uploading"),
+                T("btn.ok"));
                 return;
             }
 
             var pipeline = FindScenePipelineManager();
             if (pipeline == null || string.IsNullOrWhiteSpace(pipeline.blueprintId))
             {
-                EditorUtility.DisplayDialog("VRCW Hotswap",
-                "This scene needs a world ID.\n\nClick Build & Publish in the VRChat SDK first.",
-                "Ok");
+                EditorUtility.DisplayDialog(T("app.name"),
+                T("dialog.scene_needs_world_id"),
+                T("btn.ok"));
                 return;
             }
 
@@ -431,18 +433,18 @@ public class VRCWorldHotswap
 
             if (string.IsNullOrWhiteSpace(world.Name))
             {
-                EditorUtility.DisplayDialog("VRCW Hotswap",
-                "Set a world name in the VRChat SDK Builder first.",
-                "Ok");
+                EditorUtility.DisplayDialog(T("app.name"),
+                T("dialog.world_name_required"),
+                T("btn.ok"));
                 return;
             }
 
             bool creatingNew = string.IsNullOrWhiteSpace(world.ID);
             if (creatingNew && (string.IsNullOrWhiteSpace(thumbnailPath) || !File.Exists(thumbnailPath)))
             {
-                EditorUtility.DisplayDialog("VRCW Hotswap",
-                "New worlds need a thumbnail.\n\nSet one in the VRChat SDK Builder, then try again.",
-                "Ok");
+                EditorUtility.DisplayDialog(T("app.name"),
+                T("dialog.thumbnail_required"),
+                T("btn.ok"));
                 return;
             }
 
@@ -454,13 +456,13 @@ public class VRCWorldHotswap
             if (fileBytes > WorldUploadMaxBytes)
             {
                 string tryLabel = fileBytes > WorldUploadHopelessBytes
-                ? "I understand it will likely fail"
-                : "Try anyway";
+                ? T("btn.i_understand_likely_fail")
+                : T("btn.try_anyway");
                 if (!EditorUtility.DisplayDialog(
-                "VRCW Hotswap",
+                T("app.name"),
                 BuildOversizeUploadMessage(fileBytes, sizeLabel),
                 tryLabel,
-                "Ok"))
+                T("btn.ok")))
                 {
                     return;
                 }
@@ -469,31 +471,31 @@ public class VRCWorldHotswap
             if (IsAndroidBuildTarget)
             {
                 if (!EditorUtility.DisplayDialog(
-                "VRCW Hotswap - Android",
-                AndroidUploadDisclaimer + "\n\nContinue?",
-                "Continue",
-                "Cancel"))
+                T("app.name.android"),
+                TF("dialog.howto_continue", AndroidUploadDisclaimer),
+                T("btn.continue"),
+                T("btn.cancel")))
                 {
                     return;
                 }
             }
 
             if (!EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "Upload now?\n\n" +
-            $"Platform: {UploadPlatformLabel}\n" +
-            $"Size: {sizeLabel}\n" +
-            $"Name: {world.Name}\n" +
-            $"World ID: {pipeline.blueprintId}\n" +
-            $"{(creatingNew ? "Creates a new world." : "Updates your existing world.")}\n\n" +
-            "Tip: after this, don't click Build & Publish.",
-            "Upload",
-            "Cancel"))
+            T("app.name"),
+            TF(
+                "dialog.upload_confirm",
+                UploadPlatformLabel,
+                sizeLabel,
+                world.Name,
+                pipeline.blueprintId,
+                creatingNew ? T("dialog.upload_confirm_creates") : T("dialog.upload_confirm_updates")),
+            T("btn.upload"),
+            T("btn.cancel")))
             {
                 return;
             }
 
-            uploadProgressStatus = "Starting upload...";
+            uploadProgressStatus = T("progress.starting_upload");
             uploadProgress01 = 0f;
             cancelRequested = false;
             activeUploadBuilder = builder;
@@ -501,7 +503,7 @@ public class VRCWorldHotswap
 
             uploadStartHandler = (sender, args) =>
             {
-                uploadProgressStatus = "Uploading...";
+                uploadProgressStatus = T("progress.uploading");
                 uploadProgress01 = Mathf.Max(uploadProgress01, 0.02f);
             };
             progressHandler = (sender, progress) =>
@@ -520,7 +522,7 @@ public class VRCWorldHotswap
             EditorApplication.update += UploadProgressTick;
 
             EditorUtility.DisplayCancelableProgressBar(
-            "VRCW Hotswap",
+            T("app.name"),
             $"{uploadProgressStatus} ({sizeLabel})",
             uploadProgress01);
 
@@ -531,21 +533,21 @@ public class VRCWorldHotswap
             if (cancelRequested || uploadCts.IsCancellationRequested)
             {
                 if (!ConsumeSuppressUploadResultDialog())
-                EditorUtility.DisplayDialog("VRCW Hotswap", "Upload cancelled.", "Ok");
+                EditorUtility.DisplayDialog(T("app.name"), T("dialog.upload_cancelled"), T("btn.ok"));
             }
             else if (!ConsumeSuppressUploadResultDialog())
             {
                 EditorUtility.DisplayDialog(
-                "VRCW Hotswap",
-                "Upload finished.\n\nCheck the VRChat SDK panel if anything looks wrong.",
-                "Ok");
+                T("app.name"),
+                T("dialog.upload_finished"),
+                T("btn.ok"));
             }
         }
         catch (OperationCanceledException)
         {
             EditorApplication.Beep();
             if (!ConsumeSuppressUploadResultDialog())
-            EditorUtility.DisplayDialog("VRCW Hotswap", "Upload cancelled.", "Ok");
+            EditorUtility.DisplayDialog(T("app.name"), T("dialog.upload_cancelled"), T("btn.ok"));
             Debug.LogWarning("<color=cyan>VRCW Hotswap:</color> upload cancelled.\n");
         }
         catch (Exception e)
@@ -555,7 +557,7 @@ public class VRCWorldHotswap
             if (cancelRequested || (uploadCts != null && uploadCts.IsCancellationRequested))
             {
                 if (!ConsumeSuppressUploadResultDialog())
-                EditorUtility.DisplayDialog("VRCW Hotswap", "Upload cancelled.", "Ok");
+                EditorUtility.DisplayDialog(T("app.name"), T("dialog.upload_cancelled"), T("btn.ok"));
                 return;
             }
             if (ConsumeSuppressUploadResultDialog())
@@ -565,7 +567,7 @@ public class VRCWorldHotswap
                 ShowSdkApiMovedDialog(e.GetType().Name + ": " + e.Message);
                 return;
             }
-            EditorUtility.DisplayDialog("VRCW Hotswap", "Upload failed:\n" + e.Message + "\n\nSee the Console for more info.", "Ok");
+            EditorUtility.DisplayDialog(T("app.name"), TF("dialog.upload_failed", e.Message), T("btn.ok"));
         }
         finally
         {
@@ -594,10 +596,10 @@ public class VRCWorldHotswap
 
     private static void UploadProgressTick()
     {
-        string info = string.IsNullOrEmpty(uploadProgressStatus) ? "Uploading..." : uploadProgressStatus;
+        string info = string.IsNullOrEmpty(uploadProgressStatus) ? T("progress.uploading") : uploadProgressStatus;
         info += $" ({Mathf.RoundToInt(uploadProgress01 * 100f)}%)";
 
-        if (UpdateCancelableProgress("VRCW Hotswap", info, uploadProgress01))
+        if (UpdateCancelableProgress(T("app.name"), info, uploadProgress01))
         {
             Debug.LogWarning("<color=cyan>VRCW Hotswap:</color> upload cancel requested...\n");
             try { activeUploadBuilder?.CancelUpload(); } catch { }
@@ -624,22 +626,20 @@ public class VRCWorldHotswap
     private static void ShowSdkApiMovedDialog(string detail)
     {
         string sdkHint = TryGetInstalledWorldsSdkVersionHint();
-        string body =
-        "Can't talk to the VRChat SDK the way this tool expects.\n\n" +
-        "Often this means the Worlds SDK updated and broke this tool.\n\n" +
-        $"Tested with:\n" +
-        $"• SDK {TestedWorldsSdkVersion2019} / Unity {TestedUnityVersion2019}\n" +
-        $"• SDK {TestedWorldsSdkVersion2} / Unity {TestedUnityVersion2}\n" +
-        $"• SDK {TestedWorldsSdkVersion} / Unity {TestedUnityVersion}\n" +
-        $"• Partially tested: SDK {TestedWorldsSdkVersion} / Unity {TestedUnityVersion} with 22f2-DWR bundles\n" +
-        $"Your Unity: {Application.unityVersion}\n" +
-        $"Your SDK (guess): {sdkHint}\n\n" +
-        "Try: open VRChat SDK > Builder, sign in, fill name / image, then retry.\n" +
-        "If you just updated the SDK, note your versions and check the Console.\n\n" +
-        "Detail:\n" + (string.IsNullOrEmpty(detail) ? "(none)" : detail);
+        string body = TF(
+        "dialog.sdk_problem.body",
+        TestedWorldsSdkVersion2019,
+        TestedUnityVersion2019,
+        TestedWorldsSdkVersion2,
+        TestedUnityVersion2,
+        TestedWorldsSdkVersion,
+        TestedUnityVersion,
+        Application.unityVersion,
+        sdkHint,
+        string.IsNullOrEmpty(detail) ? T("value.none") : detail);
 
         Debug.LogError("<color=cyan>VRCW Hotswap:</color> SDK mismatch.\n" + detail + "\n");
-        EditorUtility.DisplayDialog("VRCW Hotswap - SDK problem?", body, "Ok");
+        EditorUtility.DisplayDialog(T("app.name.sdk_problem"), body, T("btn.ok"));
     }
 
     private static string TryGetInstalledWorldsSdkVersionHint()
@@ -661,7 +661,7 @@ public class VRCWorldHotswap
         }
         catch { }
 
-        return "unknown (check Packages / Creator Companion)";
+        return T("sdk.version_unknown");
     }
 
     private static bool TryGetBuilderWorldData(
@@ -731,13 +731,13 @@ public class VRCWorldHotswap
     [MenuItem("VRCW Hotswap/Inspect World File", false, 3)]
     public static void InspectVrcw()
     {
-        if (!TryBeginOperation("Inspect"))
+        if (!TryBeginOperation(T("action.inspect")))
         return;
 
         string vrcwPath = EditorUtility.OpenFilePanelWithFilters(
-        "Select a .vrcw to inspect",
+        T("dialog.select_vrcw_to_inspect"),
         Application.dataPath,
-        new[] { "World Files", "vrcw", "All files", "*" });
+        new[] { T("filter.world_files"), "vrcw", T("filter.all_files"), "*" });
         if (string.IsNullOrEmpty(vrcwPath))
         {
             EndOperation();
@@ -750,8 +750,8 @@ public class VRCWorldHotswap
         PrepareUncompressedVrcw(
         vrcwPath,
         tmp,
-        "Inspect World File",
-        "Reading...",
+        T("inspect.title"),
+        T("progress.reading"),
         AbroProgressInspect,
         readyPath =>
         {
@@ -761,7 +761,7 @@ public class VRCWorldHotswap
                 {
                     if (!string.Equals(readyPath, vrcwPath, StringComparison.OrdinalIgnoreCase))
                     try { File.Delete(tmp); } catch { }
-                    ConsumeCancelIfRequested("Inspect cancelled.", mentionUpload: false);
+                    ConsumeCancelIfRequested(T("dialog.inspect_cancelled"), mentionUpload: false);
                     return;
                 }
 
@@ -770,10 +770,10 @@ public class VRCWorldHotswap
                 {
                     if (!string.Equals(readyPath, vrcwPath, StringComparison.OrdinalIgnoreCase))
                     try { File.Delete(tmp); } catch { }
-                    if (ConsumeCancelIfRequested("Inspect cancelled.", mentionUpload: false))
+                    if (ConsumeCancelIfRequested(T("dialog.inspect_cancelled"), mentionUpload: false))
                     return;
                     FailOperation(
-                    "Couldn't read that .vrcw.\n\nCheck the Console, then try again.",
+                    T("dialog.inspect_failed_read"),
                     "Inspect failed: scan returned null.\n");
                     return;
                 }
@@ -784,50 +784,50 @@ public class VRCWorldHotswap
                 string genDetail = null;
                 bool genOk = TryReadUnityFsGeneratorVersion(vrcwPath, out genVer, out fsFormat, out genDetail);
                 var sb = new StringBuilder();
-                sb.AppendLine($"File: {vrcwPath}");
-                sb.AppendLine($"Size: {FormatByteSize(new FileInfo(vrcwPath).Length)}");
+                sb.AppendLine(TF("inspect.file", vrcwPath));
+                sb.AppendLine(TF("inspect.size", FormatByteSize(new FileInfo(vrcwPath).Length)));
                 if (genOk)
                 {
-                    sb.AppendLine($"Built with Unity: {genVer}");
-                    sb.AppendLine($"Bundle format: {fsFormat}");
+                    sb.AppendLine(TF("inspect.built_with_unity", genVer));
+                    sb.AppendLine(TF("inspect.bundle_format", fsFormat));
                     if (IsDwrGeneratorVersion(genVer))
-                        sb.AppendLine("DWR: yes (VRChat/custom build; hotswap may work, join not guaranteed)");
+                        sb.AppendLine(T("inspect.dwr_yes"));
                     sb.AppendLine(
                         IsSupportedHotswapUnityVersion(genVer)
-                            ? $"Version check: OK ({DescribeAcceptedUnityVersion(genVer)})"
+                            ? TF("inspect.version_check_ok", DescribeAcceptedUnityVersion(genVer))
                             :                             IsDwrGeneratorVersion(genVer)
-                                ? $"Version check: DWR (want {PreferredHotswapUnityVersion}, or match your Editor {Application.unityVersion}; often works, join can still fail)"
-                                : $"Version check: WRONG (want {PreferredHotswapUnityVersion}, or match your Editor {Application.unityVersion})");
+                                ? TF("inspect.version_check_dwr", PreferredHotswapUnityVersion, Application.unityVersion)
+                                : TF("inspect.version_check_wrong", PreferredHotswapUnityVersion, Application.unityVersion));
                 }
                 else
-                sb.AppendLine($"Built with Unity: (couldn't read: {genDetail ?? "n/a"})");
+                sb.AppendLine(TF("inspect.built_with_unity_unreadable", genDetail ?? T("value.na")));
                 if (lastCompressionProbeResult == true)
-                sb.AppendLine($"Compression: already uncompressed ({lastCompressionProbeDetail})");
+                sb.AppendLine(TF("inspect.compression_uncompressed", lastCompressionProbeDetail));
                 else if (lastCompressionProbeResult == false)
-                sb.AppendLine($"Compression: compressed ({lastCompressionProbeDetail})");
+                sb.AppendLine(TF("inspect.compression_value", DescribeDetectedCompression(detectedSourceCompression), lastCompressionProbeDetail));
                 else
-                sb.AppendLine($"Compression: unknown ({lastCompressionProbeDetail ?? "n/a"})");
-                sb.AppendLine($"Platform guess: {guess}");
+                sb.AppendLine(TF("inspect.compression_unknown", lastCompressionProbeDetail ?? T("value.na")));
+                sb.AppendLine(TF("inspect.platform_guess", DescribeBundlePlatformGuess(guess)));
                 sb.AppendLine();
                 if (!string.IsNullOrEmpty(scan.PipelineBlueprintId))
-                sb.AppendLine($"Main world ID: {scan.PipelineBlueprintId}");
+                sb.AppendLine(TF("inspect.main_world_id", scan.PipelineBlueprintId));
                 else
-                sb.AppendLine("Main world ID: (not found)");
+                sb.AppendLine(T("inspect.main_world_id_missing"));
                 sb.AppendLine();
-                sb.AppendLine($"World IDs found: {scan.WorldIds.Count}");
+                sb.AppendLine(TF("inspect.world_ids_found", scan.WorldIds.Count));
                 foreach (var id in scan.WorldIds)
                 sb.AppendLine($" {id} (x{scan.WorldIdCounts[id]})");
                 sb.AppendLine();
-                sb.AppendLine($"Scene names: {scan.BuildPlayerNames.Count}");
+                sb.AppendLine(TF("inspect.scene_names", scan.BuildPlayerNames.Count));
                 foreach (var n in scan.BuildPlayerNames)
                 sb.AppendLine($" {n}");
                 sb.AppendLine();
-                sb.AppendLine($"Other Unity versions in file: {string.Join(", ", scan.UnityVersions)}");
+                sb.AppendLine(TF("inspect.other_unity_versions", string.Join(", ", scan.UnityVersions)));
                 sb.AppendLine();
-                sb.AppendLine("Extra world IDs are usually portal links.");
+                sb.AppendLine(T("inspect.extra_world_ids_hint"));
 
                 Debug.Log($"<color=cyan>World file inspect</color>\n{sb}");
-                EditorUtility.DisplayDialog("Inspect World File", TruncateForDialog(sb.ToString()), "Ok");
+                EditorUtility.DisplayDialog(T("inspect.title"), TruncateForDialog(sb.ToString()), T("btn.ok"));
                 if (!string.Equals(readyPath, vrcwPath, StringComparison.OrdinalIgnoreCase))
                 try { File.Delete(tmp); } catch { }
                 EndOperation();
@@ -836,7 +836,7 @@ public class VRCWorldHotswap
             {
                 if (!string.Equals(readyPath, vrcwPath, StringComparison.OrdinalIgnoreCase))
                 try { File.Delete(tmp); } catch { }
-                FailOperation("Inspect failed:\n" + e.Message, "Inspect failed:\n" + e + "\n");
+                FailOperation(TF("dialog.inspect_failed", e.Message), "Inspect failed:\n" + e + "\n");
             }
         },
         onFailed: EndOperation);
@@ -845,7 +845,7 @@ public class VRCWorldHotswap
     private static string TruncateForDialog(string text, int max = 1500)
     {
         if (string.IsNullOrEmpty(text) || text.Length <= max) return text;
-        return text.Substring(0, max) + "\n\n...(see Console for full list)";
+        return text.Substring(0, max) + T("inspect.truncated_suffix");
     }
 
     [MenuItem("VRCW Hotswap/Spawn Dummy World", true)]
@@ -861,8 +861,9 @@ public class VRCWorldHotswap
     [MenuItem("VRCW Hotswap/Spawn Dummy World", false, 4)]
     public static void SpawnDummyWorld()
     {
+        VRCWorldHotswapLoc.PromptFirstRunLanguageIfNeeded();
 #if !VRC_SDK_VRCSDK3
-        EditorUtility.DisplayDialog("VRCW Hotswap", "VRChat World SDK is not in this project.", "Ok");
+        EditorUtility.DisplayDialog(T("app.name"), T("dialog.sdk_missing"), T("btn.ok"));
         return;
 #else
         var existing = FindFirstSceneObject<VRCSceneDescriptor>();
@@ -870,9 +871,9 @@ public class VRCWorldHotswap
         {
             Selection.activeGameObject = existing.gameObject;
             Debug.Log("<color=cyan>This scene already has a VRCWorld setup.</color>\n");
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            "This scene already has a world setup.\nSelected it.",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            T("dialog.scene_has_world_setup"),
+            T("btn.ok"));
             return;
         }
 
@@ -957,15 +958,14 @@ public class VRCWorldHotswap
         var recovered = ScanDecompressedVrcw(sourcePath);
         if (recovered == null)
         {
-            ConsumeCancelIfRequested("Hotswap cancelled while scanning.");
+            ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_scanning"));
             return;
         }
 
         if (recovered.WorldIds.Count == 0)
         {
             FailOperation(
-            "No world IDs found in that .vrcw.\n\n" +
-            "This file may not be a valid world bundle.",
+            T("dialog.no_world_ids"),
             "No world IDs found in that .vrcw.\n");
             return;
         }
@@ -975,25 +975,22 @@ public class VRCWorldHotswap
         {
             Debug.LogWarning("VRCW Hotswap cancelled (no world ID selected).\n");
             EditorApplication.Beep();
-            EditorUtility.DisplayDialog("VRCW Hotswap", "Cancelled.\n\nNo world ID was selected.", "Ok");
+            EditorUtility.DisplayDialog(T("app.name"), T("dialog.cancelled_no_world_id"), T("btn.ok"));
             EndOperation();
             return;
         }
 
         if (oldWorldId == pendingNewWorldId)
         {
-            EditorUtility.DisplayDialog("VRCW Hotswap",
-            "This file already uses the same world ID as your scene.\nNothing to change for the ID.",
-            "Ok");
+            EditorUtility.DisplayDialog(T("app.name"),
+            T("dialog.same_world_id"),
+            T("btn.ok"));
         }
 
         if (oldWorldId.Length != pendingNewWorldId.Length)
         {
             FailOperation(
-            "Can't swap these world IDs.\n\n" +
-            $"File ID length: {oldWorldId.Length}\n" +
-            $"Scene ID length: {pendingNewWorldId.Length}\n\n" +
-            "They must be the same length.",
+            TF("dialog.world_id_length_mismatch", oldWorldId.Length, pendingNewWorldId.Length),
             $"World ID length mismatch ({oldWorldId.Length} vs {pendingNewWorldId.Length}). Can't swap.\n");
             return;
         }
@@ -1012,21 +1009,21 @@ public class VRCWorldHotswap
         {
             if (!CreateModifiedFile(sourcePath, DecompModPath, changes))
             {
-                ConsumeCancelIfRequested("Hotswap cancelled while updating IDs.");
+                ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_updating_ids"));
                 return;
             }
         }
         catch (Exception e)
         {
             FailOperation(
-            "Failed while updating world IDs:\n" + e.Message + "\n\nSee the Console for more info.",
+            TF("dialog.update_ids_failed", e.Message),
             "Failed while updating IDs:\n" + e.Message + "\n");
             return;
         }
 
         if (cancelRequested)
         {
-            ConsumeCancelIfRequested("Hotswap cancelled.");
+            ConsumeCancelIfRequested(T("dialog.hotswap_cancelled"));
             return;
         }
 
@@ -1045,13 +1042,11 @@ public class VRCWorldHotswap
         return scan.WorldIds[0];
 
         int pick = EditorUtility.DisplayDialogComplex(
-        "Multiple world IDs found",
-        $"This file has {scan.WorldIds.Count} world IDs.\n" +
-        "Extras are usually portal links.\n\n" +
-        "Pick the main world ID?",
-        "Pick ID",
-        "Cancel",
-        "Use First");
+        T("idpicker.title"),
+        TF("dialog.multiple_world_ids", scan.WorldIds.Count),
+        T("btn.pick_id"),
+        T("btn.cancel"),
+        T("btn.use_first"));
 
         if (pick == 1) return null;
         if (pick == 2) return scan.WorldIds[0];
@@ -1059,13 +1054,452 @@ public class VRCWorldHotswap
         return VRCWorldHotswapIdPicker.ShowModal(scan.WorldIds, scan.WorldIdCounts);
     }
 
+    public enum DetectedBundleCompression
+    {
+        Unknown,
+        Uncompressed,
+        Lz4,
+        Lzma,
+        Mixed
+    }
+
     private static void CompressAndFinalize()
     {
         EnsureTempDirectory();
+
+        string compressorPath = GetCompressorExePath();
+        bool hasCompressor = !string.IsNullOrEmpty(compressorPath) && File.Exists(compressorPath);
+
+        if (!hasCompressor)
+        {
+            Debug.LogWarning(
+            "<color=cyan>VRCW Hotswap:</color> compressor missing; packing with Unity LZ4Runtime only.\n" +
+            "Expected: Assets/VRCW Hotswap/Editor/Compressor/VRCWHotswapCompressor.exe\n");
+            if (!EditorUtility.DisplayDialog(
+            T("app.name.packing"),
+            T("dialog.compressor_missing"),
+            T("btn.lz4runtime"),
+            T("btn.cancel")))
+            {
+                CleanupTempFiles();
+                EditorApplication.Beep();
+                EditorUtility.DisplayDialog(T("app.name"), T("dialog.cancelled_nothing_uploaded"), T("btn.ok"));
+                EndOperation();
+                return;
+            }
+
+            try { File.Delete(TmpOutPath); } catch { }
+            int fallbackOp = BeginAsyncOp();
+            StartUnityLz4RuntimePack(fallbackOp);
+            return;
+        }
+
+        var packCtx = BuildPackPickerContext(hasCompressor);
+
+        Debug.Log(
+        "<color=cyan>VRCW Hotswap:</color> pack advice: " + packCtx.RecommendReason +
+        " (est LZ4 " + FormatByteSize(packCtx.EstLz4Bytes) +
+        ", est LZMA " + FormatByteSize(packCtx.EstLzmaBytes) +
+        ", unc " + FormatByteSize(packCtx.UncompressedBytes) + ")\n");
+
+        var choice = VRCWorldHotswapPackPicker.ShowModal(packCtx);
+        if (choice == VRCWorldHotswapPackPicker.Choice.Cancel)
+        {
+            CleanupTempFiles();
+            EditorApplication.Beep();
+            EditorUtility.DisplayDialog(T("app.name"), T("dialog.cancelled_nothing_uploaded"), T("btn.ok"));
+            EndOperation();
+            return;
+        }
+
+        if (choice == VRCWorldHotswapPackPicker.Choice.Lzma)
+        {
+            if (!EditorUtility.DisplayDialog(
+            T("app.name.lzma"),
+            T("dialog.lzma_disclaimer"),
+            T("btn.lzma"),
+            T("btn.cancel")))
+            {
+                CleanupTempFiles();
+                EditorApplication.Beep();
+                EditorUtility.DisplayDialog(T("app.name"), T("dialog.cancelled_nothing_uploaded"), T("btn.ok"));
+                EndOperation();
+                return;
+            }
+        }
+
         try { File.Delete(TmpOutPath); } catch { }
         int op = BeginAsyncOp();
-        EditorUtility.DisplayCancelableProgressBar("VRCW Hotswap", "Packing...", 0f);
+        packAsyncOp = op;
 
+        if (choice == VRCWorldHotswapPackPicker.Choice.Lz4Runtime)
+        {
+            StartUnityLz4RuntimePack(op);
+            return;
+        }
+
+        if (choice == VRCWorldHotswapPackPicker.Choice.Uncompressed)
+        {
+            StartUnityUncompressedPack(op);
+            return;
+        }
+
+        string packMode = choice == VRCWorldHotswapPackPicker.Choice.Lzma ? "lzma" : "lz4";
+        packCompressionLabel = choice == VRCWorldHotswapPackPicker.Choice.Lzma ? "LZMA" : "LZ4";
+        packProgress01 = 0f;
+        packProcessExited = false;
+        packProcessExitCode = -1;
+        EditorUtility.DisplayCancelableProgressBar(T("app.name"), TF("progress.packing", packCompressionLabel), 0f);
+
+        if (TryStartExternalPack(compressorPath, packMode))
+        return;
+
+        Debug.LogWarning(
+        "<color=cyan>VRCW Hotswap:</color> AssetsTools pack failed to start; falling back to Unity LZ4Runtime.\n");
+        StartUnityLz4RuntimePack(op);
+    }
+
+    public struct PackPickerContext
+    {
+        public bool HasCompressor;
+        public bool AdvancedMode;
+        public DetectedBundleCompression Detected;
+        public long SourceBytes;
+        public long UncompressedBytes;
+        public long EstLz4Bytes;
+        public long EstLzmaBytes;
+        public long MaxBytes;
+        public long UnlikelyBytes;
+        public long HopelessBytes;
+        public bool IsAndroid;
+        public string PlatformLabel;
+        public VRCWorldHotswapPackPicker.Choice Recommended;
+        public string RecommendReason;
+        public VRCWorldHotswapPackPicker.Choice MatchSource;
+    }
+
+    public static bool GetPackAdvancedMode()
+    {
+        if (EditorPrefs.HasKey(PrefsPackAdvancedModeKey))
+        return EditorPrefs.GetBool(PrefsPackAdvancedModeKey, false);
+
+        bool legacyFast = EditorPrefs.GetBool(PrefsPackFastModeKeyLegacy, false);
+        if (legacyFast)
+        EditorPrefs.SetBool(PrefsPackAdvancedModeKey, true);
+        if (EditorPrefs.HasKey(PrefsPackFastModeKeyLegacy))
+        EditorPrefs.DeleteKey(PrefsPackFastModeKeyLegacy);
+        return legacyFast;
+    }
+
+    public static void SetPackAdvancedMode(bool enabled) =>
+    EditorPrefs.SetBool(PrefsPackAdvancedModeKey, enabled);
+
+    public static PackPickerContext BuildPackPickerContext(bool hasCompressor)
+    {
+        long uncBytes = 0;
+        try
+        {
+            if (File.Exists(DecompModPath))
+                uncBytes = new FileInfo(DecompModPath).Length;
+            else if (File.Exists(DecompRecoveredPath))
+                uncBytes = new FileInfo(DecompRecoveredPath).Length;
+        }
+        catch { }
+
+        long srcBytes = sourceFileBytes;
+        if (srcBytes <= 0 && !string.IsNullOrEmpty(pendingRecoveredPath))
+        {
+            try
+            {
+                if (File.Exists(pendingRecoveredPath))
+                    srcBytes = new FileInfo(pendingRecoveredPath).Length;
+            }
+            catch { }
+        }
+
+        long estLz4 = EstimateLz4PackedBytes(detectedSourceCompression, srcBytes, uncBytes);
+        long estLzma = EstimateLzmaPackedBytes(detectedSourceCompression, srcBytes, uncBytes);
+        bool advancedMode = GetPackAdvancedMode();
+        var matchSource = MatchSourcePackChoice(detectedSourceCompression);
+
+        ComputePackRecommendation(
+        hasCompressor,
+        estLz4,
+        estLzma,
+        out var recommended,
+        out string reason);
+
+        return new PackPickerContext
+        {
+            HasCompressor = hasCompressor,
+            AdvancedMode = advancedMode,
+            Detected = detectedSourceCompression,
+            SourceBytes = srcBytes,
+            UncompressedBytes = uncBytes,
+            EstLz4Bytes = estLz4,
+            EstLzmaBytes = estLzma,
+            MaxBytes = WorldUploadMaxBytes,
+            UnlikelyBytes = WorldUploadUnlikelyBytes,
+            HopelessBytes = WorldUploadHopelessBytes,
+            IsAndroid = IsAndroidBuildTarget,
+            PlatformLabel = UploadPlatformLabel,
+            Recommended = recommended,
+            RecommendReason = reason,
+            MatchSource = matchSource
+        };
+    }
+
+    public static VRCWorldHotswapPackPicker.Choice MatchSourcePackChoice(DetectedBundleCompression detected)
+    {
+        switch (detected)
+        {
+            case DetectedBundleCompression.Uncompressed:
+                return VRCWorldHotswapPackPicker.Choice.Uncompressed;
+            case DetectedBundleCompression.Lz4:
+                return VRCWorldHotswapPackPicker.Choice.Lz4;
+            case DetectedBundleCompression.Lzma:
+                return VRCWorldHotswapPackPicker.Choice.Lzma;
+            default:
+                return VRCWorldHotswapPackPicker.Choice.Cancel;
+        }
+    }
+
+    public static long EstimateLz4PackedBytes(
+    DetectedBundleCompression detected,
+    long sourceBytes,
+    long uncompressedBytes)
+    {
+        if (detected == DetectedBundleCompression.Lz4 && sourceBytes > 64)
+        return sourceBytes;
+
+        if (detected == DetectedBundleCompression.Lzma && sourceBytes > 64)
+        {
+            long fromUnc = uncompressedBytes > 64 ? (long)(uncompressedBytes * 0.72) : 0;
+            long fromSrc = (long)(sourceBytes * 1.35);
+            return Math.Max(sourceBytes, Math.Max(fromUnc, fromSrc));
+        }
+
+        if (uncompressedBytes > 64)
+        return Math.Max(64, (long)(uncompressedBytes * 0.70));
+
+        if (sourceBytes > 64)
+        return sourceBytes;
+
+        return 0;
+    }
+
+    public static long EstimateLzmaPackedBytes(
+    DetectedBundleCompression detected,
+    long sourceBytes,
+    long uncompressedBytes)
+    {
+        if (detected == DetectedBundleCompression.Lzma && sourceBytes > 64)
+        return sourceBytes;
+
+        if (detected == DetectedBundleCompression.Lz4 && sourceBytes > 64)
+        return Math.Max(64, (long)(sourceBytes * 0.62));
+
+        if (uncompressedBytes > 64)
+        return Math.Max(64, (long)(uncompressedBytes * 0.55));
+
+        if (sourceBytes > 64)
+        return Math.Max(64, (long)(sourceBytes * 0.62));
+
+        return 0;
+    }
+
+    public static void ComputePackRecommendation(
+    bool hasCompressor,
+    long estLz4,
+    long estLzma,
+    out VRCWorldHotswapPackPicker.Choice recommended,
+    out string reason)
+    {
+        if (!hasCompressor)
+        {
+            recommended = VRCWorldHotswapPackPicker.Choice.Lz4Runtime;
+            reason = T("pack.reason.compressor_missing");
+            return;
+        }
+
+        long maxBytes = WorldUploadMaxBytes;
+        long unlikelyBytes = WorldUploadUnlikelyBytes;
+        long hopelessBytes = WorldUploadHopelessBytes;
+
+        if (estLz4 <= 0 && estLzma <= 0)
+        {
+            recommended = VRCWorldHotswapPackPicker.Choice.Lz4;
+            reason = T("pack.reason.size_unknown");
+            return;
+        }
+
+        if (estLz4 > 0 && estLz4 <= maxBytes)
+        {
+            recommended = VRCWorldHotswapPackPicker.Choice.Lz4;
+            reason = TF("pack.reason.lz4_under_limit", UploadPlatformLabel, FormatByteSize(maxBytes));
+            return;
+        }
+
+        if (IsAndroidBuildTarget && estLz4 > maxBytes)
+        {
+            recommended = VRCWorldHotswapPackPicker.Choice.Lzma;
+            reason = estLzma > 0 && estLzma <= maxBytes
+            ? T("pack.reason.android_lzma_fit")
+            : T("pack.reason.android_lzma_maybe");
+            return;
+        }
+
+        if (estLz4 > 0 && estLz4 <= unlikelyBytes)
+        {
+            recommended = VRCWorldHotswapPackPicker.Choice.Lz4;
+            reason = TF("pack.reason.lz4_soft_zone", FormatByteSize(maxBytes), FormatByteSize(unlikelyBytes));
+            return;
+        }
+
+        recommended = VRCWorldHotswapPackPicker.Choice.Lzma;
+        if (estLzma > hopelessBytes)
+        {
+            reason = T("pack.reason.lzma_hopeless");
+        }
+        else if (estLzma > unlikelyBytes)
+        {
+            reason = T("pack.reason.lzma_soft");
+        }
+        else
+        {
+            reason = T("pack.reason.lzma_under_limit");
+        }
+    }
+
+    private static string GetCompressorExePath()
+    {
+        return Path.GetFullPath(Path.Combine(
+        Application.dataPath,
+        "VRCW Hotswap",
+        "Editor",
+        "Compressor",
+        "VRCWHotswapCompressor.exe"));
+    }
+
+    private static bool TryStartExternalPack(string compressorPath, string packMode)
+    {
+        try
+        {
+            TryKillPackProcess();
+            packProgress01 = 0f;
+            packProcessExited = false;
+            packProcessExitCode = -1;
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = compressorPath,
+                Arguments = "c \"" + DecompModPath + "\" \"" + TmpOutPath + "\" " + packMode,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (string.IsNullOrEmpty(e.Data)) return;
+                if (float.TryParse(e.Data, NumberStyles.Float, CultureInfo.InvariantCulture, out float pct))
+                {
+                    float p = pct / 100f;
+                    if (p < 0f) p = 0f;
+                    if (p > 1f) p = 1f;
+                    packProgress01 = p;
+                }
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                    Debug.LogWarning("<color=cyan>VRCW Hotswap compressor:</color> " + e.Data + "\n");
+            };
+            process.Exited += (_, __) =>
+            {
+                try { packProcessExitCode = process.ExitCode; } catch { packProcessExitCode = -1; }
+                packProcessExited = true;
+            };
+
+            if (!process.Start())
+            {
+                Debug.LogWarning("<color=cyan>VRCW Hotswap:</color> failed to start compressor; falling back to Unity LZ4Runtime.\n");
+                return false;
+            }
+
+            packProcess = process;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            EditorApplication.update += PackProcessProgress;
+            Debug.Log("<color=cyan>VRCW Hotswap:</color> packing with AssetsTools " + packCompressionLabel + ".\n");
+            return true;
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning(
+            "<color=cyan>VRCW Hotswap:</color> compressor failed to start (" + e.Message + "); falling back to Unity LZ4Runtime.\n");
+            TryKillPackProcess();
+            return false;
+        }
+    }
+
+    private static void PackProcessProgress()
+    {
+        if (!IsCurrentAsyncOp(packAsyncOp))
+        {
+            EditorApplication.update -= PackProcessProgress;
+            TryKillPackProcess();
+            return;
+        }
+
+        if (UpdateCancelableProgress(T("app.name"), TF("progress.packing", packCompressionLabel), packProgress01))
+        {
+            EditorApplication.update -= PackProcessProgress;
+            TryKillPackProcess();
+            ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_packing"));
+            return;
+        }
+
+        if (!packProcessExited)
+        return;
+
+        EditorApplication.update -= PackProcessProgress;
+        TryKillPackProcess();
+        EditorUtility.ClearProgressBar();
+
+        if (!IsCurrentAsyncOp(packAsyncOp))
+        {
+            File.Delete(DecompRecoveredPath);
+            File.Delete(DecompModPath);
+            File.Delete(TmpOutPath);
+            return;
+        }
+
+        if (ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_packing")))
+        return;
+
+        bool ok = packProcessExitCode == 0 && File.Exists(TmpOutPath) && new FileInfo(TmpOutPath).Length > 64;
+        if (ok)
+        {
+            AfterCompress();
+            return;
+        }
+
+        Debug.LogWarning(
+        "<color=cyan>VRCW Hotswap:</color> AssetsTools " + packCompressionLabel +
+        " packing failed (exit " + packProcessExitCode + "); falling back to Unity LZ4Runtime.\n");
+        try { File.Delete(TmpOutPath); } catch { }
+        StartUnityLz4RuntimePack(packAsyncOp);
+    }
+
+    private static void StartUnityLz4RuntimePack(int op)
+    {
+        packAsyncOp = op;
+        packCompressionLabel = "Unity LZ4Runtime";
+        EditorUtility.DisplayCancelableProgressBar(T("app.name"), T("progress.packing_unity_lz4runtime"), 0f);
         abro = AssetBundle.RecompressAssetBundleAsync(DecompModPath, TmpOutPath, BuildCompression.LZ4Runtime);
         EditorApplication.update += AbroProgressCompress;
         abro.completed += _ =>
@@ -1085,7 +1519,7 @@ public class VRCWorldHotswap
                 return;
             }
 
-            if (ConsumeCancelIfRequested("Hotswap cancelled during packing."))
+            if (ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_packing")))
             return;
 
             if (unityOk)
@@ -1099,16 +1533,74 @@ public class VRCWorldHotswap
             "The modified file could not be recompressed. Try again, or use a different .vrcw.\n");
             EditorApplication.Beep();
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "Packing failed.\n\n" +
-            $"Result: {unityResult}\n\n" +
-            "Nothing was uploaded. Check the Console, then try again.",
-            "Ok");
+            T("app.name"),
+            TF("dialog.packing_failed", unityResult),
+            T("btn.ok"));
             File.Delete(DecompRecoveredPath);
             File.Delete(DecompModPath);
             File.Delete(TmpOutPath);
             EndOperation();
         };
+    }
+
+    private static void StartUnityUncompressedPack(int op)
+    {
+        packAsyncOp = op;
+        packCompressionLabel = "Uncompressed";
+        EditorUtility.DisplayCancelableProgressBar(T("app.name"), T("progress.packing_uncompressed"), 0f);
+        abro = AssetBundle.RecompressAssetBundleAsync(DecompModPath, TmpOutPath, BuildCompression.UncompressedRuntime);
+        EditorApplication.update += AbroProgressCompress;
+        abro.completed += _ =>
+        {
+            EditorApplication.update -= AbroProgressCompress;
+            EditorUtility.ClearProgressBar();
+
+            bool unityOk = abro != null && abro.success && File.Exists(TmpOutPath) && new FileInfo(TmpOutPath).Length > 64;
+            string unityResult = abro != null ? abro.result.ToString() : "null";
+            abro = null;
+
+            if (!IsCurrentAsyncOp(op))
+            {
+                File.Delete(DecompRecoveredPath);
+                File.Delete(DecompModPath);
+                File.Delete(TmpOutPath);
+                return;
+            }
+
+            if (ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_packing")))
+            return;
+
+            if (unityOk)
+            {
+                AfterCompress();
+                return;
+            }
+
+            Debug.LogError(
+            $"VRCW Hotswap failed: Unity uncompressed packing failed ({unityResult}).\n" +
+            "The modified file could not be written. Try again, or use a different .vrcw.\n");
+            EditorApplication.Beep();
+            EditorUtility.DisplayDialog(
+            T("app.name"),
+            TF("dialog.packing_failed", unityResult),
+            T("btn.ok"));
+            File.Delete(DecompRecoveredPath);
+            File.Delete(DecompModPath);
+            File.Delete(TmpOutPath);
+            EndOperation();
+        };
+    }
+
+    private static void TryKillPackProcess()
+    {
+        try
+        {
+            if (packProcess != null && !packProcess.HasExited)
+                packProcess.Kill();
+        }
+        catch { }
+        try { packProcess?.Dispose(); } catch { }
+        packProcess = null;
     }
 
     private static void AfterCompress()
@@ -1122,14 +1614,14 @@ public class VRCWorldHotswap
             File.Delete(DecompModPath);
             File.Delete(TmpOutPath);
             FailOperation(
-            "Packing produced an empty or invalid file.\n\nNothing was uploaded. Try again, or use a different .vrcw.",
+            T("dialog.invalid_packed_file"),
             $"VRCW Hotswap failed: recompression produced empty/invalid output ({badBytes} bytes).\n");
             return;
         }
 
         int op = BeginAsyncOp();
         abcr = AssetBundle.LoadFromFileAsync(TmpOutPath);
-        EditorUtility.DisplayCancelableProgressBar("VRCW Hotswap", "Checking result...", 0f);
+        EditorUtility.DisplayCancelableProgressBar(T("app.name"), T("progress.checking_result"), 0f);
         EditorApplication.update += AbcrProgress;
         abcr.completed += _ =>
         {
@@ -1147,7 +1639,7 @@ public class VRCWorldHotswap
                 return;
             }
 
-            if (ConsumeCancelIfRequested("Hotswap cancelled while checking result."))
+            if (ConsumeCancelIfRequested(T("dialog.hotswap_cancelled_checking")))
             {
                 if (bundle != null) bundle.Unload(true);
                 return;
@@ -1159,7 +1651,7 @@ public class VRCWorldHotswap
                 File.Delete(DecompModPath);
                 File.Delete(TmpOutPath);
                 FailOperation(
-                "The packed file couldn't be opened.\n\nNothing was uploaded. Try again, or use a different .vrcw.",
+                T("dialog.packed_file_open_failed"),
                 "VRCW Hotswap failed: the packed file couldn't be opened.\n");
                 return;
             }
@@ -1180,7 +1672,7 @@ public class VRCWorldHotswap
             {
                 File.Delete(TmpOutPath);
                 FailOperation(
-                "The packed file has no scene/assets.\n\nNothing was uploaded. Try a different .vrcw.",
+                T("dialog.packed_file_no_assets"),
                 "VRCW Hotswap failed: no scene/assets found in output bundle.\n");
                 return;
             }
@@ -1197,7 +1689,7 @@ public class VRCWorldHotswap
             dest = Path.Combine(
             Path.GetDirectoryName(pendingRecoveredPath) ?? Application.dataPath,
             Path.GetFileNameWithoutExtension(pendingRecoveredPath) + "_hotswapped.vrcw");
-            dest = EditorUtility.SaveFilePanel("Save hotswapped world", Path.GetDirectoryName(dest), Path.GetFileName(dest), "vrcw");
+            dest = EditorUtility.SaveFilePanel(T("dialog.save_hotswapped_world"), Path.GetDirectoryName(dest), Path.GetFileName(dest), "vrcw");
             if (string.IsNullOrEmpty(dest))
             {
                 Debug.LogWarning("VRCW Hotswap cancelled at save dialog.\n");
@@ -1215,7 +1707,7 @@ public class VRCWorldHotswap
         catch (Exception e)
         {
             FailOperation(
-            "Couldn't write the hotswapped file:\n" + e.Message + "\n\nNothing was uploaded.",
+            TF("dialog.write_failed", e.Message),
             "Failed to write hotswapped VRCW:\n" + e.Message + "\n");
             return;
         }
@@ -1226,7 +1718,7 @@ public class VRCWorldHotswap
 
         EditorApplication.Beep();
         long outBytes = File.Exists(dest) ? new FileInfo(dest).Length : 0;
-        string sizeNote = outBytes > 0 ? $"Size: {FormatByteSize(outBytes)}\n\n" : "";
+        string sizeNote = outBytes > 0 ? TF("inspect.size", FormatByteSize(outBytes)) + "\n\n" : "";
         string sizeWarning = outBytes > WorldUploadMaxBytes
         ? BuildOversizeHint(outBytes) + "\n\n"
         : "";
@@ -1234,18 +1726,13 @@ public class VRCWorldHotswap
         string androidNote = IsAndroidBuildTarget
         ? AndroidUploadDisclaimer + "\n\n"
         : "";
+        string lzmaNote = string.Equals(packCompressionLabel, "LZMA", StringComparison.Ordinal)
+        ? T("dialog.lzma_join_note")
+        : "";
         EditorUtility.DisplayDialog(
-        "VRCW Hotswap",
-        "World loaded!\n\n" +
-            "Your original .vrcw file is left untouched.\n\n" +
-        sizeNote +
-        androidPackNote +
-        sizeWarning +
-        androidNote +
-        $"World ID: {pendingNewWorldId}\n\n" +
-        "Next: VRCW Hotswap > Upload Hotswapped Build\n" +
-        "Don't click Build & Publish after this.",
-        "Ok");
+        T("app.name"),
+        TF("dialog.world_loaded", sizeNote, androidPackNote, sizeWarning, androidNote, lzmaNote, pendingNewWorldId),
+        T("btn.ok"));
         Debug.Log($"<color=cyan>HOTSWAP OK</color>\n{dest}\nID={pendingNewWorldId}\nSize={FormatByteSize(outBytes)}\nPlatform={UploadPlatformLabel}\n");
         EndOperation();
     }
@@ -1258,17 +1745,14 @@ public class VRCWorldHotswap
         string packedLabel = FormatByteSize(packedBytes);
         string limitLabel = FormatByteSize(AndroidUploadMaxBytes);
         if (packedBytes <= AndroidUploadMaxBytes)
-        return $"Android packed size: {packedLabel} (under {limitLabel} limit). OK to upload.\n\n";
+        return TF("android.packed_ok", packedLabel, limitLabel);
 
-        return $"Android packed size: {packedLabel} (over {limitLabel} limit). Upload will probably fail.\n\n";
+        return TF("android.packed_over", packedLabel, limitLabel);
     }
 
     private static string BuildOversizeUploadMessage(long fileBytes, string sizeLabel)
     {
-        return $"This file looks too big for {UploadPlatformLabel}.\n\n" +
-        $"Size: {sizeLabel}\n" +
-        $"Usual limit: about {FormatByteSize(WorldUploadMaxBytes)}\n\n" +
-        BuildOversizeHint(fileBytes);
+        return TF("oversize.upload_message", UploadPlatformLabel, sizeLabel, FormatByteSize(WorldUploadMaxBytes), BuildOversizeHint(fileBytes));
     }
 
     private static string BuildOversizeHint(long fileBytes)
@@ -1276,21 +1760,21 @@ public class VRCWorldHotswap
         if (IsAndroidBuildTarget)
         {
             if (fileBytes > AndroidUploadHopelessBytes)
-            return "Android worlds must be under 100 MB. This is over that.";
+            return T("oversize.android_over");
 
-            return "Android worlds must stay under 100 MB packed.";
+            return T("oversize.android_packed");
         }
 
         if (fileBytes > WorldUploadHopelessBytes)
-        return "Over about 2.5 GB almost never works.";
+        return T("oversize.pc_hopeless");
 
         if (fileBytes > WorldUploadUnlikelyBytes)
-        return "This size often fails with \"That file is much too big\".";
+        return T("oversize.pc_unlikely");
 
-        return "It might still work. If not, VRChat will say the file is too big.";
+        return T("oversize.pc_maybe");
     }
 
-    private static string FormatByteSize(long bytes)
+    public static string FormatByteSize(long bytes)
     {
         if (bytes < 1024) return bytes + " B";
         double kb = bytes / 1024.0;
@@ -1316,30 +1800,24 @@ public class VRCWorldHotswap
         if (!wasActive && !operationBusy)
         {
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "Nothing to reset.\nNo hotswap is loaded right now.",
-            "Ok");
+            T("app.name"),
+            T("dialog.nothing_to_reset"),
+            T("btn.ok"));
             return;
         }
 
         string confirm =
         uploadInFlight
-        ? "An upload is still running.\n\n" +
-        "Cancel the upload and clear the current hotswap?\n\n" +
-        "This only resets this tool. It does not delete worlds on VRChat."
+        ? T("dialog.reset_confirm_upload_running")
         : operationBusy
-        ? "Something is still running (load/inspect/pack).\n\n" +
-        "Cancel it and clear the current hotswap?\n\n" +
-        "This only resets this tool so you can load another file."
-        : "Clear the current hotswap?\n\n" +
-        "This only resets this tool so you can load another file.\n" +
-        "Nothing is uploaded.";
+        ? T("dialog.reset_confirm_busy")
+        : T("dialog.reset_confirm_idle");
 
         if (!EditorUtility.DisplayDialog(
-        "VRCW Hotswap",
+        T("app.name"),
         confirm,
-        uploadInFlight || operationBusy ? "Cancel & Reset" : "Reset",
-        "Keep Going"))
+        uploadInFlight || operationBusy ? T("btn.cancel_and_reset") : T("btn.reset"),
+        T("btn.keep_going")))
         {
             return;
         }
@@ -1350,18 +1828,18 @@ public class VRCWorldHotswap
 
             EditorApplication.Beep();
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
+            T("app.name"),
             uploadInFlight
-            ? "Upload cancel requested and hotswap cleared.\n\nYou can Load Hotswap File again."
-            : "Cleared.\n\nYou can Load Hotswap File again.",
-            "Ok");
+            ? T("dialog.reset_done_upload")
+            : T("dialog.reset_done"),
+            T("btn.ok"));
             Debug.Log("<color=cyan>VRCW Hotswap reset.</color>\n");
         }
         catch (Exception e)
         {
             Debug.LogError("Failed to reset hotswap:\n" + e.Message + "\n");
             EditorApplication.Beep();
-            EditorUtility.DisplayDialog("VRCW Hotswap", "Reset failed:\n" + e.Message, "Ok");
+            EditorUtility.DisplayDialog(T("app.name"), TF("dialog.reset_failed", e.Message), T("btn.ok"));
         }
     }
 
@@ -1397,6 +1875,7 @@ public class VRCWorldHotswap
         activeUncompressedRecoveredPath = null;
         abro = null;
         abcr = null;
+        TryKillPackProcess();
 
         if (uploadStillFinishing)
         {
@@ -1432,6 +1911,7 @@ public class VRCWorldHotswap
         activeUncompressedRecoveredPath = null;
         abro = null;
         abcr = null;
+        TryKillPackProcess();
     }
 
     private static void RememberHotswapOutput(string dest)
@@ -1481,9 +1961,9 @@ public class VRCWorldHotswap
         {
             if (clearSessionOnMismatch) ClearHotswapSessionFlags();
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "The hotswapped file is missing.\n\nLoad Hotswap File again.",
-            "Ok");
+            T("app.name"),
+            T("dialog.hotswapped_missing"),
+            T("btn.ok"));
             return false;
         }
 
@@ -1492,11 +1972,9 @@ public class VRCWorldHotswap
         {
             if (clearSessionOnMismatch) ClearHotswapSessionFlags();
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "The hotswapped file changed.\n\n" +
-            "Build & Publish probably overwrote it.\n\n" +
-            "Load Hotswap File again.",
-            "Ok");
+            T("app.name"),
+            T("dialog.hotswapped_changed"),
+            T("btn.ok"));
             return false;
         }
 
@@ -1505,11 +1983,9 @@ public class VRCWorldHotswap
         {
             if (clearSessionOnMismatch) ClearHotswapSessionFlags();
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            "The hotswapped file changed.\n\n" +
-            "Build & Publish probably overwrote it.\n\n" +
-            "Load Hotswap File again.",
-            "Ok");
+            T("app.name"),
+            T("dialog.hotswapped_changed"),
+            T("btn.ok"));
             return false;
         }
 
@@ -1552,18 +2028,20 @@ public class VRCWorldHotswap
 
     private static bool TryBeginOperation(string label)
     {
+        VRCWorldHotswapLoc.PromptFirstRunLanguageIfNeeded();
+
         if (operationBusy)
         {
             EditorUtility.DisplayDialog(
-            "VRCW Hotswap",
-            $"Already busy.\n\nWait for it to finish, or use Reset Current Hotswap, then try {label} again.",
-            "Ok");
+            T("app.name"),
+            TF("dialog.already_busy", label),
+            T("btn.ok"));
             return false;
         }
 
         if (EditorApplication.isPlayingOrWillChangePlaymode)
         {
-            EditorUtility.DisplayDialog("VRCW Hotswap", "Exit Play Mode first.", "Ok");
+            EditorUtility.DisplayDialog(T("app.name"), T("dialog.exit_play_mode"), T("btn.ok"));
             return false;
         }
 
@@ -1587,7 +2065,7 @@ public class VRCWorldHotswap
         Debug.LogError(dialogMessage + "\n");
         EditorApplication.Beep();
         try { EditorUtility.ClearProgressBar(); } catch { }
-        EditorUtility.DisplayDialog("VRCW Hotswap", dialogMessage, "Ok");
+        EditorUtility.DisplayDialog(T("app.name"), dialogMessage, T("btn.ok"));
         EndOperation();
     }
 
@@ -1604,8 +2082,8 @@ public class VRCWorldHotswap
         if (!cancelRequested) return false;
         CleanupTempFiles();
         EditorApplication.Beep();
-        string body = mentionUpload ? message + "\n\nNothing was uploaded." : message;
-        EditorUtility.DisplayDialog("VRCW Hotswap", body, "Ok");
+        string body = mentionUpload ? message + T("cancel.nothing_uploaded_suffix") : message;
+        EditorUtility.DisplayDialog(T("app.name"), body, T("btn.ok"));
         EndOperation();
         return true;
     }
@@ -1692,10 +2170,10 @@ public class VRCWorldHotswap
     private static string DescribeAcceptedUnityVersion(string generatorVersion)
     {
         if (string.Equals(generatorVersion, PreferredHotswapUnityVersion, StringComparison.OrdinalIgnoreCase))
-            return $"matches preferred {PreferredHotswapUnityVersion}";
+            return TF("unity.supported.preferred", PreferredHotswapUnityVersion);
 
         if (string.Equals(generatorVersion, Application.unityVersion, StringComparison.OrdinalIgnoreCase))
-            return $"matches this Editor ({Application.unityVersion})";
+            return TF("unity.supported.editor", Application.unityVersion);
 
         return generatorVersion;
     }
@@ -1705,14 +2183,10 @@ public class VRCWorldHotswap
         if (!TryReadUnityFsGeneratorVersion(vrcwPath, out string generatorVersion, out int _, out string detail))
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Unity version?",
-            "Couldn't read which Unity version made this file.\n\n" +
-            $"Detail: {detail ?? "n/a"}\n\n" +
-            "Best: use a .vrcw that matches this Editor, " +
-            $"or a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}.\n\n" +
-            "Continue anyway?",
-            "Continue Anyway",
-            "Cancel");
+            T("app.name.unity_version"),
+            TF("confirm.unity_unknown", detail ?? T("value.na"), PreferredHotswapUnityVersion),
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
         }
 
         if (IsSupportedHotswapUnityVersion(generatorVersion))
@@ -1732,39 +2206,23 @@ public class VRCWorldHotswap
                 $"editor={editorVer}.\n");
 
             return EditorUtility.DisplayDialog(
-                "VRCW Hotswap - DWR bundle",
-                $"This looks like a DWR build:\n  {generatorVersion}\n\n" +
-                $"This Editor is:\n  {editorVer}\n\n" +
-                "DWR files are VRChat/custom builds, not a normal SDK Build & Publish .vrcw.\n\n" +
-                "Hotswap and upload may work, and they are often more likely to work than " +
-                "much older Unity worlds, but joining can still fail.\n\n" +
-                $"Most reliable: a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}, " +
-                "or a .vrcw that exactly matches this Editor.\n\n" +
-                "Continue anyway?",
-                "Continue Anyway",
-                "Cancel");
+                T("app.name.dwr_bundle"),
+                TF("confirm.dwr_bundle", generatorVersion, editorVer, PreferredHotswapUnityVersion),
+                T("btn.continue_anyway"),
+                T("btn.cancel"));
         }
 
-        string body =
-            $"This file was built with:\n  {generatorVersion}\n\n" +
-            $"This Editor is:\n  {editorVer}\n\n" +
-            $"Important: open Unity {generatorVersion} and run hotswap there instead.\n\n" +
-            $"Uploading a {generatorVersion} world from Editor {editorVer} is not recommended.\n" +
-            "The upload might succeed, but joining the world usually will not work.\n\n" +
-            $"Other options:\n" +
-            $"- Use a .vrcw built with this Editor ({editorVer})\n" +
-            $"- Or use a {PreferredHotswapUnityVersion} .vrcw on Unity {PreferredHotswapUnityVersion}\n\n" +
-            "Continue anyway?";
+        string body = TF("confirm.unity_mismatch", generatorVersion, editorVer, PreferredHotswapUnityVersion);
 
         Debug.LogWarning(
             $"<color=cyan>VRCW Hotswap:</color> Unity mismatch: file={generatorVersion}, " +
             $"editor={editorVer}, preferred={PreferredHotswapUnityVersion}.\n");
 
         return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Unity version mismatch",
+            T("app.name.unity_mismatch"),
             body,
-            "Continue Anyway",
-            "Cancel");
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
     }
 
     private static bool IsDwrGeneratorVersion(string generatorVersion)
@@ -1777,41 +2235,37 @@ public class VRCWorldHotswap
     {
         var guess = GuessBundlePlatform(vrcwPath);
         bool androidTarget = IsAndroidBuildTarget;
-        string targetLabel = androidTarget ? "Android" : "PC";
+        string targetLabel = androidTarget ? T("platform.android") : T("platform.pc");
 
         if (guess == BundlePlatformGuess.Unknown || guess == BundlePlatformGuess.Ambiguous)
         {
             string why = guess == BundlePlatformGuess.Ambiguous
-            ? "This file has mixed PC and Android markers."
-            : "Couldn't tell if this file is PC or Android.";
+            ? TF("confirm.platform_ambiguous", targetLabel)
+            : TF("confirm.platform_unknown", targetLabel);
 
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Platform?",
-            why + "\n\n" +
-            $"Unity is currently set to: {targetLabel}\n\n" +
-            "Make sure that matches your world, then continue.",
-            "Continue",
-            "Cancel");
+            T("app.name.platform"),
+            why,
+            T("btn.continue"),
+            T("btn.cancel"));
         }
 
         if (androidTarget && guess == BundlePlatformGuess.Pc)
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Wrong platform?",
-            "Unity is set to Android, but this file looks like a PC world.\n\n" +
-            "Continue anyway?",
-            "Continue Anyway",
-            "Cancel");
+            T("app.name.wrong_platform"),
+            T("confirm.platform_android_target_pc_file"),
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
         }
 
         if (!androidTarget && guess == BundlePlatformGuess.Android)
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Wrong platform?",
-            "Unity is set to PC, but this file looks like an Android world.\n\n" +
-            "Continue anyway?",
-            "Continue Anyway",
-            "Cancel");
+            T("app.name.wrong_platform"),
+            T("confirm.platform_pc_target_android_file"),
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
         }
 
         return true;
@@ -1833,32 +2287,26 @@ public class VRCWorldHotswap
         if (bytes <= PcUploadUnlikelyBytes)
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - PC size",
-            "PC worlds over ~1 GB can get rejected.\n\n" +
-            $"This file is {FormatByteSize(bytes)}.\n\n" +
-            "Continue anyway?",
-            "Continue Anyway",
-            "Cancel");
+            T("app.name.pc_size"),
+            TF("confirm.pc_size_soft", FormatByteSize(bytes)),
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
         }
 
         if (bytes <= PcUploadHopelessBytes)
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - PC size",
-            "PC worlds this large are often rejected (~1.5-2.5 GB).\n\n" +
-            $"This file is {FormatByteSize(bytes)}.\n\n" +
-            "Continue anyway?",
-            "Continue Anyway",
-            "Cancel");
+            T("app.name.pc_size"),
+            TF("confirm.pc_size_unlikely", FormatByteSize(bytes)),
+            T("btn.continue_anyway"),
+            T("btn.cancel"));
         }
 
         return EditorUtility.DisplayDialog(
-        "VRCW Hotswap - PC size",
-        "PC worlds over ~2.5 GB almost never upload.\n\n" +
-        $"This file is {FormatByteSize(bytes)}.\n\n" +
-        "Continue anyway?",
-        "I understand it will likely fail",
-        "Cancel");
+        T("app.name.pc_size"),
+        TF("confirm.pc_size_hopeless", FormatByteSize(bytes)),
+        T("btn.i_understand_likely_fail"),
+        T("btn.cancel"));
     }
 
     private static bool ConfirmAndroidSourceSizeOrContinue(string vrcwPath)
@@ -1870,22 +2318,17 @@ public class VRCWorldHotswap
         if (bytes <= AndroidTrySourceMaxBytes)
         {
             return EditorUtility.DisplayDialog(
-            "VRCW Hotswap - Android size",
-            "Android worlds must end up under 100 MB.\n\n" +
-            $"This file is {FormatByteSize(bytes)}.\n" +
-            "Packing might shrink it enough. Want to try?",
-            "Try Packing",
-            "Cancel");
+            T("app.name.android_size"),
+            TF("confirm.android_size_try", FormatByteSize(bytes)),
+            T("btn.try_packing"),
+            T("btn.cancel"));
         }
 
         return EditorUtility.DisplayDialog(
-        "VRCW Hotswap - Android size",
-        "Android worlds must end up under 100 MB.\n\n" +
-        $"This file is {FormatByteSize(bytes)}.\n" +
-        "Over 200 MB almost never works.\n\n" +
-        "Continue anyway?",
-        "I understand it will likely fail",
-        "Cancel");
+        T("app.name.android_size"),
+        TF("confirm.android_size_hopeless", FormatByteSize(bytes)),
+        T("btn.i_understand_likely_fail"),
+        T("btn.cancel"));
     }
 
     private static BundlePlatformGuess GuessBundlePlatform(string path)
@@ -1956,25 +2399,25 @@ public class VRCWorldHotswap
     private static void AbroProgressRecovered()
     {
         if (abro != null)
-        UpdateCancelableProgress("VRCW Hotswap", "Preparing your world file...", abro.progress);
+        UpdateCancelableProgress(T("app.name"), T("progress.preparing_world"), abro.progress);
     }
 
     private static void AbroProgressCompress()
     {
         if (abro != null)
-        UpdateCancelableProgress("VRCW Hotswap", "Packing...", abro.progress);
+        UpdateCancelableProgress(T("app.name"), T("progress.packing_unity_lz4runtime"), abro.progress);
     }
 
     private static void AbroProgressInspect()
     {
         if (abro != null)
-        UpdateCancelableProgress("Inspect World File", "Reading...", abro.progress);
+        UpdateCancelableProgress(T("inspect.title"), T("progress.reading"), abro.progress);
     }
 
     private static void AbcrProgress()
     {
         if (abcr != null)
-        UpdateCancelableProgress("VRCW Hotswap", "Checking result...", abcr.progress);
+        UpdateCancelableProgress(T("app.name"), T("progress.checking_result"), abcr.progress);
     }
 
     private static string lastCompressionProbeDetail;
@@ -1989,8 +2432,15 @@ public class VRCWorldHotswap
     Action<string> onReady,
     Action onFailed = null)
     {
-        lastCompressionProbeResult = TryIsFullyUncompressedUnityFs(vrcwPath, out lastCompressionProbeDetail);
-        if (lastCompressionProbeResult == true)
+        detectedSourceCompression = TryDetectBundleCompression(vrcwPath, out lastCompressionProbeDetail);
+        try { sourceFileBytes = new FileInfo(vrcwPath).Length; } catch { sourceFileBytes = 0; }
+        lastCompressionProbeResult = detectedSourceCompression == DetectedBundleCompression.Uncompressed
+        ? true
+        : detectedSourceCompression == DetectedBundleCompression.Unknown
+        ? (bool?)null
+        : false;
+
+        if (detectedSourceCompression == DetectedBundleCompression.Uncompressed)
         {
             Debug.Log(
             $"<color=cyan>VRCW Hotswap:</color> already uncompressed ({lastCompressionProbeDetail}); skipping decompress.\n");
@@ -2021,7 +2471,7 @@ public class VRCWorldHotswap
             {
                 try { File.Delete(tempUncompressedPath); } catch { }
                 if (cancelRequested)
-                ConsumeCancelIfRequested("Cancelled while preparing the world file.");
+                ConsumeCancelIfRequested(T("dialog.preparing_cancelled"));
                 else
                 onFailed?.Invoke();
                 return;
@@ -2031,9 +2481,7 @@ public class VRCWorldHotswap
             {
                 try { File.Delete(tempUncompressedPath); } catch { }
                 FailOperation(
-                "Could not open that .vrcw file.\n\n" +
-                (string.IsNullOrEmpty(result) ? "Unknown error." : result) +
-                "\n\nCheck the Console, then try again.",
+                TF("dialog.open_vrcw_failed", string.IsNullOrEmpty(result) ? T("error.unknown") : result),
                 $"Could not open that .vrcw file.\n{result}\n");
 
                 return;
@@ -2043,7 +2491,38 @@ public class VRCWorldHotswap
         };
     }
 
-    private static bool? TryIsFullyUncompressedUnityFs(string path, out string detail)
+    public static string DescribeDetectedCompression(DetectedBundleCompression kind)
+    {
+        switch (kind)
+        {
+            case DetectedBundleCompression.Uncompressed: return T("compression.uncompressed");
+            case DetectedBundleCompression.Lz4: return "LZ4";
+            case DetectedBundleCompression.Lzma: return "LZMA";
+            case DetectedBundleCompression.Mixed: return T("compression.mixed");
+            default: return T("compression.unknown");
+        }
+    }
+
+    private static string DescribeBundlePlatformGuess(BundlePlatformGuess guess)
+    {
+        switch (guess)
+        {
+            case BundlePlatformGuess.Pc: return T("platform.guess.pc");
+            case BundlePlatformGuess.Android: return T("platform.guess.android");
+            case BundlePlatformGuess.Ambiguous: return T("platform.guess.ambiguous");
+            default: return T("platform.guess.unknown");
+        }
+    }
+
+    private static DetectedBundleCompression CompressionTypeFromFlag(int compType)
+    {
+        if (compType == 1) return DetectedBundleCompression.Lzma;
+        if (compType == 2 || compType == 3) return DetectedBundleCompression.Lz4;
+        if (compType == 0) return DetectedBundleCompression.Uncompressed;
+        return DetectedBundleCompression.Unknown;
+    }
+
+    private static DetectedBundleCompression TryDetectBundleCompression(string path, out string detail)
     {
         detail = null;
         try
@@ -2055,24 +2534,23 @@ public class VRCWorldHotswap
                 if (sigBytes.Length < 8)
                 {
                     detail = "file too small";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 string sig = Encoding.ASCII.GetString(sigBytes).TrimEnd('\0');
                 if (sig != "UnityFS")
                 {
                     detail = "not UnityFS (" + sig + ")";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 uint format = ReadUInt32BE(br);
                 if (format < 6 || format > 8)
                 {
-
                     if (format < 3)
                     {
                         detail = "unsupported UnityFS format " + format;
-                        return null;
+                        return DetectedBundleCompression.Unknown;
                     }
                 }
 
@@ -2091,20 +2569,23 @@ public class VRCWorldHotswap
                 compressedInfoSize > int.MaxValue || uncompressedInfoSize > int.MaxValue)
                 {
                     detail = "invalid blocks-info sizes";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 if (infoCompType != 0)
                 {
+                    var fromInfo = CompressionTypeFromFlag(infoCompType);
                     detail = "blocks-info compression type=" + infoCompType +
                     " (LZMA=1 LZ4=2 LZ4HC=3)";
-                    return false;
+                    return fromInfo == DetectedBundleCompression.Uncompressed
+                    ? DetectedBundleCompression.Unknown
+                    : fromInfo;
                 }
 
                 if (compressedInfoSize != uncompressedInfoSize)
                 {
                     detail = "blocks-info size mismatch for type=None";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 long headerEnd = fs.Position;
@@ -2121,7 +2602,7 @@ public class VRCWorldHotswap
                     if (compressedInfoSize > fs.Length)
                     {
                         detail = "blocks-info larger than file";
-                        return null;
+                        return DetectedBundleCompression.Unknown;
                     }
                     fs.Position = fs.Length - compressedInfoSize;
                     info = br.ReadBytes((int)compressedInfoSize);
@@ -2134,31 +2615,34 @@ public class VRCWorldHotswap
                 if (info == null || info.Length != (int)compressedInfoSize)
                 {
                     detail = "failed reading blocks-info";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 int o = 16;
                 if (o + 4 > info.Length)
                 {
                     detail = "blocks-info too small";
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 uint blockCount = ReadUInt32BE(info, ref o);
                 if (blockCount == 0 || blockCount > 5_000_000u)
                 {
                     detail = "suspicious blockCount=" + blockCount;
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
                 long expectedMin = 16L + 4L + (long)blockCount * 10L + 4L;
                 if (expectedMin > info.Length)
                 {
                     detail = "blocks-info truncated for blockCount=" + blockCount;
-                    return null;
+                    return DetectedBundleCompression.Unknown;
                 }
 
-                int compressedBlocks = 0;
+                int noneBlocks = 0;
+                int lz4Blocks = 0;
+                int lzmaBlocks = 0;
+                int otherBlocks = 0;
                 for (uint i = 0; i < blockCount; i++)
                 {
                     uint uSize = ReadUInt32BE(info, ref o);
@@ -2166,31 +2650,58 @@ public class VRCWorldHotswap
                     ushort blockFlags = ReadUInt16BE(info, ref o);
                     int blockComp = blockFlags & 0x3F;
 
-                    if (blockComp != 0)
-                    compressedBlocks++;
-                    else if (cSize != uSize)
+                    if (blockComp == 0)
                     {
-                        detail = "uncompressed block with mismatched sizes";
-                        return null;
+                        noneBlocks++;
+                        if (cSize != uSize)
+                        {
+                            detail = "uncompressed block with mismatched sizes";
+                            return DetectedBundleCompression.Unknown;
+                        }
                     }
+                    else if (blockComp == 1)
+                    lzmaBlocks++;
+                    else if (blockComp == 2 || blockComp == 3)
+                    lz4Blocks++;
+                    else
+                    otherBlocks++;
                 }
 
-                if (compressedBlocks > 0)
+                int compressedBlocks = lz4Blocks + lzmaBlocks + otherBlocks;
+                if (compressedBlocks == 0)
                 {
-                    detail = compressedBlocks + " compressed / " + blockCount + " blocks";
-                    return false;
+                    detail = "all " + blockCount + " blocks uncompressed" +
+                    (headerFileSize > 0 ? ", headerSize=" + headerFileSize : "");
+                    return DetectedBundleCompression.Uncompressed;
                 }
 
-                detail = "all " + blockCount + " blocks uncompressed" +
-                (headerFileSize > 0 ? ", headerSize=" + headerFileSize : "");
-                return true;
+                detail = compressedBlocks + " compressed / " + blockCount + " blocks" +
+                " (lz4=" + lz4Blocks + ", lzma=" + lzmaBlocks + ", other=" + otherBlocks + ")";
+
+                if (otherBlocks > 0)
+                return DetectedBundleCompression.Mixed;
+                if (lz4Blocks > 0 && lzmaBlocks > 0)
+                return DetectedBundleCompression.Mixed;
+                if (lzmaBlocks > 0)
+                return DetectedBundleCompression.Lzma;
+                if (lz4Blocks > 0)
+                return DetectedBundleCompression.Lz4;
+                return DetectedBundleCompression.Mixed;
             }
         }
         catch (Exception e)
         {
             detail = e.GetType().Name + ": " + e.Message;
-            return null;
+            return DetectedBundleCompression.Unknown;
         }
+    }
+
+    private static bool? TryIsFullyUncompressedUnityFs(string path, out string detail)
+    {
+        var kind = TryDetectBundleCompression(path, out detail);
+        if (kind == DetectedBundleCompression.Uncompressed) return true;
+        if (kind == DetectedBundleCompression.Unknown) return null;
+        return false;
     }
 
     private static uint ReadUInt32BE(BinaryReader br)
@@ -2256,7 +2767,7 @@ public class VRCWorldHotswap
         {
             while (true)
             {
-                if (UpdateCancelableProgress("VRCW Hotswap", "Scanning world file...",
+                if (UpdateCancelableProgress(T("app.name"), T("progress.scanning_world"),
                 fileLen > 0 ? Mathf.Clamp01((float)fs.Position / fileLen) : 0f))
                 {
                     EditorUtility.ClearProgressBar();
@@ -2402,7 +2913,7 @@ public class VRCWorldHotswap
 
             while (true)
             {
-                if (UpdateCancelableProgress("VRCW Hotswap", "Updating IDs...",
+                if (UpdateCancelableProgress(T("app.name"), T("progress.updating_ids"),
                 fileLen > 0 ? Mathf.Clamp01((float)input.Position / fileLen) : 0f))
                 {
                     EditorUtility.ClearProgressBar();
@@ -2471,6 +2982,189 @@ public class VRCWorldHotswap
     }
 }
 
+public class VRCWorldHotswapPackPicker : EditorWindow
+{
+    public enum Choice
+    {
+        Cancel,
+        Lz4Runtime,
+        Lz4,
+        Lzma,
+        Uncompressed
+    }
+
+    private VRCWorldHotswap.PackPickerContext ctx;
+    private bool advancedMode;
+    private Choice result = Choice.Cancel;
+    private Vector2 scroll;
+
+    public static Choice ShowModal(VRCWorldHotswap.PackPickerContext context)
+    {
+        var window = CreateInstance<VRCWorldHotswapPackPicker>();
+        window.titleContent = new GUIContent(VRCWorldHotswapLoc.T("app.name.packing"));
+        window.ctx = context;
+        window.advancedMode = context.AdvancedMode;
+        window.minSize = new Vector2(520, 440);
+        window.maxSize = new Vector2(620, 620);
+        window.ShowModalUtility();
+        return window.result;
+    }
+
+    private void PersistMode()
+    {
+        VRCWorldHotswap.SetPackAdvancedMode(advancedMode);
+        ctx.AdvancedMode = advancedMode;
+    }
+
+    private static string ChoiceTitle(Choice choice)
+    {
+        switch (choice)
+        {
+            case Choice.Uncompressed: return VRCWorldHotswapLoc.T("pack.choice.uncompressed.title");
+            case Choice.Lz4Runtime: return VRCWorldHotswapLoc.T("pack.choice.lz4runtime.title");
+            case Choice.Lz4: return VRCWorldHotswapLoc.T("pack.choice.lz4.title");
+            case Choice.Lzma: return VRCWorldHotswapLoc.T("pack.choice.lzma.title");
+            default: return choice.ToString();
+        }
+    }
+
+    private static string ChoiceSubtitle(Choice choice)
+    {
+        switch (choice)
+        {
+            case Choice.Uncompressed:
+                return VRCWorldHotswapLoc.T("pack.choice.uncompressed.subtitle");
+            case Choice.Lz4Runtime:
+                return VRCWorldHotswapLoc.T("pack.choice.lz4runtime.subtitle");
+            case Choice.Lz4:
+                return VRCWorldHotswapLoc.T("pack.choice.lz4.subtitle");
+            case Choice.Lzma:
+                return VRCWorldHotswapLoc.T("pack.choice.lzma.subtitle");
+            default:
+                return "";
+        }
+    }
+
+    private bool ChoiceEnabled(Choice choice)
+    {
+        if (choice == Choice.Lz4 || choice == Choice.Lzma)
+        return ctx.HasCompressor;
+        return true;
+    }
+
+    private void DrawPackButton(Choice choice)
+    {
+        bool recommended = ctx.Recommended == choice;
+        bool matchesSource = ctx.MatchSource == choice && ctx.MatchSource != Choice.Cancel;
+        bool enabled = ChoiceEnabled(choice);
+
+        Color prev = GUI.backgroundColor;
+        if (recommended)
+        GUI.backgroundColor = new Color(0.45f, 0.9f, 0.55f);
+        else if (matchesSource)
+        GUI.backgroundColor = new Color(0.75f, 0.85f, 1f);
+
+        var badges = new List<string>();
+        if (recommended) badges.Add(VRCWorldHotswapLoc.T("pack.badge.recommended"));
+        if (matchesSource) badges.Add(VRCWorldHotswapLoc.T("pack.badge.matches_source"));
+        string label = ChoiceTitle(choice);
+        if (badges.Count > 0)
+        label += "  [" + string.Join(", ", badges) + "]";
+
+        EditorGUI.BeginDisabledGroup(!enabled);
+        if (GUILayout.Button(label, GUILayout.Height(34)))
+        {
+            result = choice;
+            Close();
+        }
+        EditorGUI.EndDisabledGroup();
+        GUI.backgroundColor = prev;
+        EditorGUILayout.LabelField(ChoiceSubtitle(choice), EditorStyles.miniLabel);
+        GUILayout.Space(4);
+    }
+
+    private void OnGUI()
+    {
+        string detectedLabel = VRCWorldHotswap.DescribeDetectedCompression(ctx.Detected);
+        string unlikelyLabel = ctx.IsAndroid ? "" : VRCWorldHotswapLoc.TF("pack.helpbox.unlikely_suffix", VRCWorldHotswap.FormatByteSize(ctx.UnlikelyBytes));
+        string sourceSize = ctx.SourceBytes > 0 ? " (" + VRCWorldHotswap.FormatByteSize(ctx.SourceBytes) + ")" : "";
+        string uncompressedLabel = ctx.UncompressedBytes > 0 ? VRCWorldHotswap.FormatByteSize(ctx.UncompressedBytes) : VRCWorldHotswapLoc.T("value.na");
+        string lz4Label = ctx.EstLz4Bytes > 0 ? VRCWorldHotswap.FormatByteSize(ctx.EstLz4Bytes) : VRCWorldHotswapLoc.T("value.na");
+        string lzmaLabel = ctx.EstLzmaBytes > 0 ? VRCWorldHotswap.FormatByteSize(ctx.EstLzmaBytes) : VRCWorldHotswapLoc.T("value.na");
+
+        EditorGUILayout.BeginHorizontal();
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("pack.mode"), GUILayout.Width(40));
+        int modeIndex = advancedMode ? 1 : 0;
+        int newMode = GUILayout.Toolbar(modeIndex, new[] { VRCWorldHotswapLoc.T("pack.mode.simple"), VRCWorldHotswapLoc.T("pack.mode.advanced") });
+        if (newMode != modeIndex)
+        {
+            advancedMode = newMode == 1;
+            PersistMode();
+        }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.LabelField(
+        advancedMode
+        ? VRCWorldHotswapLoc.T("pack.mode.advanced_desc")
+        : VRCWorldHotswapLoc.T("pack.mode.simple_desc"),
+        EditorStyles.miniLabel);
+
+        EditorGUILayout.HelpBox(
+        VRCWorldHotswapLoc.TF(
+            "pack.helpbox",
+            ctx.PlatformLabel,
+            VRCWorldHotswap.FormatByteSize(ctx.MaxBytes),
+            unlikelyLabel,
+            detectedLabel,
+            sourceSize,
+            uncompressedLabel,
+            lz4Label,
+            lzmaLabel,
+            ChoiceTitle(ctx.Recommended),
+            ctx.RecommendReason),
+        MessageType.Info);
+
+        scroll = EditorGUILayout.BeginScrollView(scroll);
+
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("pack.recommended_path"), EditorStyles.boldLabel);
+        DrawPackButton(ctx.Recommended);
+
+        EditorGUILayout.Space(6);
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("pack.other_options"), EditorStyles.boldLabel);
+        if (ctx.Recommended != Choice.Lz4)
+        DrawPackButton(Choice.Lz4);
+        if (ctx.Recommended != Choice.Lzma)
+        DrawPackButton(Choice.Lzma);
+
+        if (advancedMode)
+        {
+            GUILayout.Space(8);
+            EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("pack.testing_options"), EditorStyles.boldLabel);
+            EditorGUILayout.LabelField(
+            VRCWorldHotswapLoc.T("pack.testing_desc"),
+            EditorStyles.miniLabel);
+            if (ctx.Recommended != Choice.Lz4Runtime)
+            DrawPackButton(Choice.Lz4Runtime);
+            if (ctx.Recommended != Choice.Uncompressed)
+            DrawPackButton(Choice.Uncompressed);
+        }
+
+        EditorGUILayout.EndScrollView();
+
+        if (!ctx.HasCompressor)
+        {
+            EditorGUILayout.HelpBox(
+            VRCWorldHotswapLoc.T("pack.compressor_missing_warning"),
+            MessageType.Warning);
+        }
+
+        if (GUILayout.Button(VRCWorldHotswapLoc.T("btn.cancel"), GUILayout.Height(28)))
+        {
+            result = Choice.Cancel;
+            Close();
+        }
+    }
+}
+
 public class VRCWorldHotswapIdPicker : EditorWindow
 {
     private List<string> ids;
@@ -2482,7 +3176,7 @@ public class VRCWorldHotswapIdPicker : EditorWindow
     public static string ShowModal(List<string> ids, Dictionary<string, int> counts)
     {
         var window = CreateInstance<VRCWorldHotswapIdPicker>();
-        window.titleContent = new GUIContent("Pick the main world ID");
+        window.titleContent = new GUIContent(VRCWorldHotswapLoc.T("idpicker.title"));
         window.ids = ids;
         window.counts = counts;
         window.selected = ids[0];
@@ -2494,7 +3188,7 @@ public class VRCWorldHotswapIdPicker : EditorWindow
     private void OnGUI()
     {
         EditorGUILayout.HelpBox(
-        "Pick this world's own ID.\nDon't pick portal links unless you mean to.",
+        VRCWorldHotswapLoc.T("idpicker.help"),
         MessageType.Info);
 
         scroll = EditorGUILayout.BeginScrollView(scroll);
@@ -2508,13 +3202,13 @@ public class VRCWorldHotswapIdPicker : EditorWindow
 
         EditorGUILayout.Space();
         EditorGUILayout.BeginHorizontal();
-        if (GUILayout.Button("Cancel"))
+        if (GUILayout.Button(VRCWorldHotswapLoc.T("btn.cancel")))
         {
             confirmed = false;
             selected = null;
             Close();
         }
-        if (GUILayout.Button("Use Selected"))
+        if (GUILayout.Button(VRCWorldHotswapLoc.T("btn.use_selected")))
         {
             confirmed = true;
             Close();
@@ -2531,7 +3225,7 @@ public class VRCWorldHotswapAboutWindow : EditorWindow
 
     public static void ShowWindow()
     {
-        var window = GetWindow<VRCWorldHotswapAboutWindow>(true, "About VRCW Hotswap", true);
+        var window = GetWindow<VRCWorldHotswapAboutWindow>(true, VRCWorldHotswapLoc.T("about.title"), true);
         window.minSize = new Vector2(460, 360);
         window.maxSize = new Vector2(560, 480);
         window.Show();
@@ -2561,47 +3255,45 @@ public class VRCWorldHotswapAboutWindow : EditorWindow
         }
 
         GUILayout.Space(10);
-        EditorGUILayout.LabelField("VRCW Hotswap", EditorStyles.boldLabel);
-        EditorGUILayout.LabelField("Version " + VRCWorldHotswap.Version);
-        EditorGUILayout.LabelField("Tested & working:", EditorStyles.miniLabel);
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("app.name"), EditorStyles.boldLabel);
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.TF("about.version", VRCWorldHotswap.Version));
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("about.tested_working"), EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion2019} / Unity {VRCWorldHotswap.TestedUnityVersion2019}",
+            VRCWorldHotswapLoc.TF("about.tested_working_2019", VRCWorldHotswap.TestedWorldsSdkVersion2019, VRCWorldHotswap.TestedUnityVersion2019),
             EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion2} / Unity {VRCWorldHotswap.TestedUnityVersion2} with PC worlds that match 6f1",
+            VRCWorldHotswapLoc.TF("about.tested_working_2022_6f1", VRCWorldHotswap.TestedWorldsSdkVersion2, VRCWorldHotswap.TestedUnityVersion2),
             EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion} / Unity {VRCWorldHotswap.TestedUnityVersion} with PC worlds that match 22f1",
+            VRCWorldHotswapLoc.TF("about.tested_working_2022_22f1", VRCWorldHotswap.TestedWorldsSdkVersion, VRCWorldHotswap.TestedUnityVersion),
             EditorStyles.miniLabel);
-        EditorGUILayout.LabelField("Partially tested & sometimes working:", EditorStyles.miniLabel);
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("about.partially_tested"), EditorStyles.miniLabel);
         EditorGUILayout.LabelField(
-            $"• Worlds SDK {VRCWorldHotswap.TestedWorldsSdkVersion} / Unity {VRCWorldHotswap.TestedUnityVersion} with 22f2-DWR world bundles",
+            VRCWorldHotswapLoc.TF("about.partially_tested_dwr", VRCWorldHotswap.TestedWorldsSdkVersion, VRCWorldHotswap.TestedUnityVersion),
             EditorStyles.miniLabel);
         GUILayout.Space(6);
         EditorGUILayout.HelpBox(
-            "Rewrites a .vrcw to your world ID, swaps it onto the SDK's last build, and lets you upload it.\n" +
-            "Works best when the file's Unity version matches your Editor.\n" +
-            "Only use this on your own worlds.",
+            VRCWorldHotswapLoc.T("about.description"),
         MessageType.Info);
 
-        if (GUILayout.Button("Show howto again", GUILayout.Height(26)))
+        if (GUILayout.Button(VRCWorldHotswapLoc.T("btn.show_howto_again"), GUILayout.Height(26)))
         {
             VRCWorldHotswap.ResetHowtoPref();
             VRCWorldHotswap.ShowHowtoDialog();
         }
 
         GUILayout.Space(12);
-        EditorGUILayout.LabelField("Credits", EditorStyles.boldLabel);
-        DrawLinkedLine("Maintained by: ", VRCWorldHotswap.MaintainerName, null, VRCWorldHotswap.MaintainerUrl);
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("about.credits"), EditorStyles.boldLabel);
+        DrawLinkedLine(VRCWorldHotswapLoc.T("about.maintained_by"), VRCWorldHotswap.MaintainerName, null, VRCWorldHotswap.MaintainerUrl);
         DrawLinkedLine(
-        "Based on ",
+        VRCWorldHotswapLoc.T("about.based_on_prefix"),
         VRCWorldHotswap.OriginalAuthorName,
-        "'s Hotswap Script",
+        VRCWorldHotswapLoc.T("about.based_on_suffix"),
         VRCWorldHotswap.OriginalAuthorUrl);
 
         GUILayout.FlexibleSpace();
-        EditorGUILayout.LabelField("Needs the VRChat Worlds SDK.", EditorStyles.miniLabel);
-        if (GUILayout.Button("Close", GUILayout.Height(28)))
+        EditorGUILayout.LabelField(VRCWorldHotswapLoc.T("about.needs_sdk"), EditorStyles.miniLabel);
+        if (GUILayout.Button(VRCWorldHotswapLoc.T("btn.close"), GUILayout.Height(28)))
         Close();
     }
 
