@@ -5,7 +5,13 @@
 
 Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.  
 Works best when the file's Unity version matches your Editor.  
-Includes [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) for LZ4/LZMA packing, bundled as a helper exe.
+Includes [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) for LZ4/LZMA packing, bundled as a helper exe.  
+The library itself is stock AssetsTools.NET 3.0.5 from NuGet.  
+  
+Will ship a package without the compressor .EXE, for those of you who don't need to upload large worlds.  
+Keep in mind you will be limited to LZ4Runtime and will not be able to pack with LZ4/LZMA.  
+  
+Available localization: English (default), 简体中文 (Simplified Chinese), 日本語 (Japanese), 한국어 (Korean), Español (Spanish).  
 
 > **Status:** `1.0.4-beta`  
 > Recover your old worlds.  
