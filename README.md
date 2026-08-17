@@ -140,7 +140,7 @@ Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 Standing on the shoulders of giants  
 Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script  
   
-Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) (official package, not the original Hotswap fork). Big thanks.
+Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
 
 ---
 
