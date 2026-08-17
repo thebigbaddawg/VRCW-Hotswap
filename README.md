@@ -6,12 +6,12 @@
 Unity editor script to rewrite a .vrcw to your world ID, swap it onto the SDK's last build, and upload it.  
 Works best when the file's Unity version matches your Editor.  
 Includes [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) for LZ4/LZMA packing, bundled as a helper exe.  
-The library itself is stock AssetsTools.NET 3.0.5 from NuGet.  
+The library itself is stock AssetsTools.NET 3.0.5 from NuGet, not the original Hotswap fork.  
   
-Will ship a package without the compressor .EXE, for those of you who don't need to upload large worlds.  
+A package without the compressor .EXE is also available, for those of you who don't need to upload large worlds.  
 Keep in mind you will be limited to LZ4Runtime and will not be able to pack with LZ4/LZMA.  
   
-Available localization: English (default), 简体中文 (Simplified Chinese), 日本語 (Japanese), 한국어 (Korean), Español (Spanish).  
+Available localization: English (default), 中文 (简体), 日本語, 한국어, Español.  
 
 > **Status:** `1.0.4-beta`  
 > Recover your old worlds.  
@@ -36,8 +36,7 @@ Available localization: English (default), 简体中文 (Simplified Chinese), �
 
 ### Install
 
-Import the `.unitypackage`, or copy the whole folder into your project:
-
+Import the `.unitypackage`.
 
 Or copy the source into your project:
 
@@ -46,13 +45,14 @@ Assets/VRCW Hotswap/
 ```
 
 That folder should include:
+
 ```text
 Editor/VRCWorldHotswap.cs
 Editor/VRCWorldHotswapLoc.cs
-Editor/Compressor/VRCWHotswapCompressor.exe (official AssetsTools.NET packer)
+Editor/Compressor/VRCWHotswapCompressor.exe
 ```
-The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime.   
-LZ4 and LZMA needs the helper.
+
+The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime (same as 1.0.3). LZ4 and LZMA need the helper EXE.
 
 ---
 
@@ -96,6 +96,8 @@ Uploading a mismatched world may succeed, but **joining usually fails**.
 | ~1.5-2.5 GB | Often rejected |
 | Over ~2.5 GB | Almost never works |
 
+Packing can use **Uncompressed**, **Unity LZ4Runtime**, **AssetsTools LZ4**, or **AssetsTools LZMA**. The picker recommends from estimated size vs platform limits (LZ4 when it should fit, LZMA as the size escape hatch). Simple mode hides testing options; Advanced reveals them. LZMA join may refuse for a while after upload; retrying later usually works.
+
 **Android** (Quest, Pico, phones, etc. - barely tested)
 
 | Size | Chance |
@@ -127,6 +129,8 @@ The tool may show an SDK problem dialog. Note your Unity + SDK versions and chec
 | **About VRCW Hotswap** | Version, credits, howto |
 | **Reset Current Hotswap** | Clear the current swap (bottom of menu) |
 
+On first use the tool asks once which language you want, and defaults to English if you close that prompt. You can change it later from **VRCW Hotswap -> Language**. Menu item names stay in English in every language; the localized text shows a short translation next to them so both are visible.
+
 ---
 
 ## Credits
@@ -136,7 +140,7 @@ Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
 Standing on the shoulders of giants  
 Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script  
   
-Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
+Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) (official package, not the original Hotswap fork). Big thanks.
 
 ---
 
