@@ -52,7 +52,8 @@ Editor/VRCWorldHotswapLoc.cs
 Editor/Compressor/VRCWHotswapCompressor.exe
 ```
 
-The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime (same as 1.0.3). LZ4 and LZMA need the helper EXE.
+The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime.   
+LZ4 and LZMA need the helper EXE.
 
 ---
 
