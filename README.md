@@ -36,13 +36,23 @@ Available localization: English (default), 简体中文 (Simplified Chinese), �
 
 ### Install
 
-Copy this into your project:
+Import the `.unitypackage`, or copy the whole folder into your project:
+
+
+Or copy the source into your project:
 
 ```text
-Assets/VRCW Hotswap/Editor/VRCWorldHotswap.cs
+Assets/VRCW Hotswap/
 ```
 
-Or import the `.unitypackage`.
+That folder should include:
+```text
+Editor/VRCWorldHotswap.cs
+Editor/VRCWorldHotswapLoc.cs
+Editor/Compressor/VRCWHotswapCompressor.exe (official AssetsTools.NET packer)
+```
+The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime.   
+LZ4 and LZMA needs the helper.
 
 ---
 
