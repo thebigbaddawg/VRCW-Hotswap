@@ -139,8 +139,8 @@ On first use the tool asks once which language you want, and defaults to English
 
 ## Credits
 
-Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
-Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script. Huge thanks.  
+Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)  
+Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script. Huge thanks.    
 Compressor/Helper from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
 
 ---
