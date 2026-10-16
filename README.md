@@ -8,7 +8,7 @@ Works best when the file's Unity version matches your Editor.
 Includes [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET) for LZ4/LZMA packing, bundled as a helper exe.  
 The library itself is stock AssetsTools.NET 3.0.5 from NuGet.
   
-A package without the compressor .EXE is also available, for those of you who don't need to upload large worlds.  
+A package without the compressor .exe is also available, for those of you who don't need to upload large worlds.  
 Keep in mind you will be limited to LZ4Runtime and will not be able to pack with LZ4/LZMA.  
   
 Available localization: English (default), 中文 (简体), 日本語, 한국어, Español.  
@@ -29,9 +29,10 @@ Available localization: English (default), 中文 (简体), 日本語, 한국어
 - Worlds SDK **3.4.2** on Unity **2019.4.31f1** with PC worlds that match **2019.4.31f1**
 - Worlds SDK **3.7.6** on Unity **2022.3.6f1** with PC worlds that match **2022.3.6f1**
 - Worlds SDK **3.10.4** on Unity **2022.3.22f1** with PC worlds that match **2022.3.22f1**
+- Worlds SDK **3.10.4** on Unity **2022.3.22f1** with **22f2-DWR** world bundles
 
 **Partially tested & sometimes working:**
-- Worlds SDK **3.10.4** on Unity **2022.3.22f1** with **22f2-DWR** world bundles
+- Android
 
 
 ### Install
@@ -53,7 +54,7 @@ Editor/Compressor/VRCWHotswapCompressor.exe
 ```
 
 The exe is the official AssetsTools.NET packer. If it is missing, packing still works, but only with LZ4Runtime.   
-LZ4 and LZMA need the helper EXE.
+LZ4 and LZMA need the helper exe.
 
 ---
 
@@ -94,8 +95,9 @@ Uploading a mismatched world may succeed, but **joining usually fails**.
 |------|--------|
 | Under ~1 GB | Fine |
 | ~1-1.5 GB | Maybe |
-| ~1.5-2.5 GB | Often rejected |
-| Over ~2.5 GB | Almost never works |
+| ~1.5-2.5 GB | Often rejected, may succeed with LZMA |
+| Over ~2.5 GB | Almost never works, but may succeed with LZMA |
+It also depends on the world bundle in question, and how it was packed.
 
 Packing can use **Uncompressed**, **Unity LZ4Runtime**, **AssetsTools LZ4**, or **AssetsTools LZMA**. The picker recommends from estimated size vs platform limits (LZ4 when it should fit, LZMA as the size escape hatch). Simple mode hides testing options; Advanced reveals them. LZMA join may refuse for a while after upload; retrying later usually works.
 
@@ -106,7 +108,7 @@ Packing can use **Uncompressed**, **Unity LZ4Runtime**, **AssetsTools LZ4**, or 
 | Under 100 MB | Required |
 | Over 100 MB | Rejected |
 
-Android source files of **100-200 MB** can still be tried (packing might shrink them). Over **~200 MB** almost never works.
+Android source files of **100+ MB** can still be tried (packing might shrink them). Over **~300 MB** almost never works.
 
 ### After hotswap
 
@@ -137,11 +139,8 @@ On first use the tool asks once which language you want, and defaults to English
 ## Credits
 
 Maintained by: [thebigbaddawg](https://github.com/thebigbaddawg)
-
-Standing on the shoulders of giants  
 Based on [FACS01](https://github.com/FACS01-01)'s Hotswap Script. Huge thanks.  
-  
-Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
+Compressor/Helper from [AssetsTools.NET](https://github.com/nesrak1/AssetsTools.NET). Big thanks.
 
 ---
 
@@ -158,6 +157,8 @@ Compressor/Helper EXE from [AssetsTools.NET](https://github.com/nesrak1/AssetsTo
 | Unity version mismatch | Open the Unity version that matches the file, or use a `.vrcw` that matches this Editor |
 | Wrong platform | Match PC vs Android to Unity's build target |
 | Want another world | Load Hotswap File again, or Reset |
+
+**Keep in mind to not just hit "Build & Publish" or "Upload" after loading a hotswapped build, you need to dropdown the same menu in the top of Unity and press "Upload Hotswapped Build", after that the world will be uploaded.**
 
 ---
 
