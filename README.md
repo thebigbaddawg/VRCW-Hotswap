@@ -96,8 +96,9 @@ Uploading a mismatched world may succeed, but **joining usually fails**.
 | Under ~1 GB | Fine |
 | ~1-1.5 GB | Maybe |
 | ~1.5-2.5 GB | Often rejected, may succeed with LZMA |
-| Over ~2.5 GB | Almost never works, but may succeed with LZMA |
-It also depends on the world bundle in question, and how it was packed.
+| Over ~2.5 GB | Almost never works, but may succeed with LZMA |  
+
+It also depends on how the world bundle in question is packed.
 
 Packing can use **Uncompressed**, **Unity LZ4Runtime**, **AssetsTools LZ4**, or **AssetsTools LZMA**. The picker recommends from estimated size vs platform limits (LZ4 when it should fit, LZMA as the size escape hatch). Simple mode hides testing options; Advanced reveals them. LZMA join may refuse for a while after upload; retrying later usually works.
 
